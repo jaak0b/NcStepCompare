@@ -3,6 +3,8 @@ import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 import { autoOrient } from '../src/engine/autoOrient'
 import { DeviationTracker, toleranceLimits } from '../src/engine/deviation'
+import { spoilboardFindings } from '../src/engine/findings/jobFindings'
+import { stockFindings } from '../src/engine/findings/stockFindings'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { mergePartGrids, rasterizePart } from '../src/engine/modelGrid'
 import { placePositions, type PartPlacement } from '../src/engine/partPlacement'
@@ -58,7 +60,8 @@ describe('backplate fixture against its STEP model', async () => {
   const part = readStepPart(occt, readFileSync(new URL('../fixtures/V2 Backplate 6.11 v93.step', import.meta.url)), 'backplate.step', 0.005)
   const job = parseGcode(readFileSync(new URL('../fixtures/Z1 Pro - Backplate CM_TOP_210320.nc', import.meta.url), 'utf8'))
   const tools = new Map<number, CutterProfile>()
-  for (const t of buildToolTable(job.header.tools, [])) tools.set(t.number, cutterProfile(t) as CutterProfile)
+  const toolTable = buildToolTable(job.header.tools, [])
+  for (const t of toolTable) tools.set(t.number, cutterProfile(t) as CutterProfile)
   // The default cell size, so the 0.05 mm gouge tolerance zone reaches the neighbouring cells.
   const sim = new MaterialSimulation(stockBoxInWorkCoordinates(job.header.stock!, job.header.workOrigin!)!, 0.05, job.moves, tools, [])
   sim.advanceTo(job.moves.count)
@@ -106,5 +109,39 @@ describe('backplate fixture against its STEP model', async () => {
       expect(c.h).toBeGreaterThanOrEqual(2.95)
       expect(c.h).toBeLessThanOrEqual(3.05)
     }
+  })
+
+  it('reports no gouge and the 11 M3 holes as threads, 3.00 mm across', () => {
+    const g = sim.grid
+    const model = mergePartGrids(g, [rasterizePart(g, placePositions(part.mesh, placement), part.mesh.indices)])
+    const findings = stockFindings({
+      grid: g,
+      heights: g.heights,
+      model,
+      limits: toleranceLimits(g, model, { gouge: 0.05, leftover: 0.1 }, g.bottom),
+      lastCut: sim.lastCut,
+      moveTool: job.moves.tool,
+      moveLine: job.moves.line,
+      threadMills: new Set(toolTable.filter((t) => t.kind === 'thread mill').map((t) => t.number)),
+    })
+
+    expect(findings.filter((f) => f.kind === 'gouge')).toEqual([])
+    const sizes = findings.filter((f) => f.kind === 'thread').map((f) => f.rows.find((r) => r.label === 'Size in X and Y')?.value)
+    expect(sizes).toEqual(Array(11).fill('3.00 x 3.00 mm'))
+  })
+
+  // Through-cuts end at Z -10.3 and drilling at Z -11.0, with the stock bottom at Z -10.
+  it('reaches 0.3 mm into the spoilboard with the through-cuts and 1.0 mm with the drill', () => {
+    const depths = spoilboardFindings(job.moves, -10).map((f) => [f.toolpath, f.rows[0].value])
+
+    expect(depths).toEqual([
+      [3, '0.300 mm'],
+      [4, '1.000 mm'],
+      [6, '0.300 mm'],
+      [7, '0.300 mm'],
+      [8, '0.300 mm'],
+      [9, '0.300 mm'],
+      [12, '0.300 mm'],
+    ])
   })
 }, 300000)
