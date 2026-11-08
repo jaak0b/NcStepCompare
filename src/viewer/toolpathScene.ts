@@ -77,10 +77,7 @@ export class ToolpathScene {
   private userMovedCamera = false
 
   constructor(private readonly container: HTMLElement) {
-    // Multisampling only below a device pixel ratio of 2: at 2 and above a pixel is small enough that
-    // aliasing barely shows, while a 4x multisampled drawing buffer of four times the pixels costs
-    // more GPU time per frame than the whole scene (measured on Direct3D 11 through ANGLE).
-    this.renderer = new THREE.WebGLRenderer({ antialias: window.devicePixelRatio < 2 })
+    this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(window.devicePixelRatio)
     this.renderer.setClearColor(0xffffff)
     container.appendChild(this.renderer.domElement)
@@ -353,20 +350,16 @@ export class ToolpathScene {
     if (this.frameHandle !== null) return
     this.frameHandle = requestAnimationFrame(() => {
       this.frameHandle = null
-      this.renderFrame()
+      const t0 = performance.now()
+      this.stockSurface?.updateView(this.camera)
+      this.renderer.render(this.scene, this.camera)
+      if (this.outlineGroup.visible && this.outlines.size > 0) {
+        this.renderer.autoClear = false
+        this.renderer.clearDepth()
+        this.renderer.render(this.outlineScene, this.camera)
+        this.renderer.autoClear = true
+      }
+      this.lastRenderMs = performance.now() - t0
     })
-  }
-
-  private renderFrame(): void {
-    const t0 = performance.now()
-    this.stockSurface?.updateView(this.camera)
-    this.renderer.render(this.scene, this.camera)
-    if (this.outlineGroup.visible && this.outlines.size > 0) {
-      this.renderer.autoClear = false
-      this.renderer.clearDepth()
-      this.renderer.render(this.outlineScene, this.camera)
-      this.renderer.autoClear = true
-    }
-    this.lastRenderMs = performance.now() - t0
   }
 }
