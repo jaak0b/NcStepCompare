@@ -5,6 +5,7 @@ import { ToolpathScene, type ToolMarker } from '../viewer/toolpathScene'
 import type { LoadedJob } from '../workers/parseMessages'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
+import type { MissingMaterial } from '../engine/comparisonView'
 
 const props = defineProps<{
   loaded: LoadedJob | null
@@ -13,6 +14,7 @@ const props = defineProps<{
   rapidsVisible: boolean
   toolMarker: ToolMarker | null
   outlinesVisible: boolean
+  missingVisible: boolean
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -21,6 +23,7 @@ let scene: ToolpathScene | null = null
 onMounted(() => {
   scene = new ToolpathScene(host.value!)
   scene.setPartOutlinesVisible(props.outlinesVisible)
+  scene.setMissingMaterialVisible(props.missingVisible)
   showJob()
 })
 
@@ -55,7 +58,8 @@ defineExpose({
   setStockGrid: (grid: GridInfo, heights: Float32Array) => scene?.setStockGrid(grid, heights),
   applyStockRect: (rect: CellRect, data: Float32Array) => scene?.applyStockRect(rect, data),
   clearStock: () => scene?.clearStock(),
-  setStockLimits: (limits: Float32Array | null) => scene?.setStockLimits(limits),
+  setStockLimits: (limits: Float32Array | null, classes: Uint8Array | null) => scene?.setStockLimits(limits, classes),
+  setMissingMaterial: (m: MissingMaterial | null) => scene?.setMissingMaterial(m),
   setPartOutlines: (parts: { id: string; positions: Float32Array; indices: Uint32Array }[]) =>
     scene?.setPartOutlines(parts),
   lastRenderMs: () => scene?.lastRenderMs ?? 0,
@@ -64,6 +68,10 @@ defineExpose({
 watch(
   () => props.outlinesVisible,
   (v) => scene?.setPartOutlinesVisible(v),
+)
+watch(
+  () => props.missingVisible,
+  (v) => scene?.setMissingMaterialVisible(v),
 )
 watch(
   () => props.rapidsVisible,
@@ -130,6 +138,6 @@ watch(
   background: #1d2733;
 }
 .finding {
-  background: #c026d3;
+  background: #0891b2;
 }
 </style>

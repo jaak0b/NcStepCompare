@@ -1,4 +1,5 @@
 import type { OrientationCandidate } from '../engine/autoOrient'
+import type { MissingMaterial } from '../engine/comparisonView'
 import type { DeviationSummary, Tolerances } from '../engine/deviation'
 import type { Finding } from '../engine/findings/finding'
 import type { FindingMoves, FindingTool } from '../engine/findings/moveFindings'
@@ -49,6 +50,10 @@ export interface ComparisonResult {
   deviation: DeviationSummary | null
   /** Gouges, threads and leftover on the final stock; empty without parts. */
   findings: Finding[]
+  /** Per cell: bottom face class and thread bit (see comparisonView); null without parts. */
+  classes: Uint8Array | null
+  /** Material the model needs but the G-code cut away, on the final stock; null without parts. */
+  missing: MissingMaterial | null
   rasterizeMs: number
   limitsMs: number
 }

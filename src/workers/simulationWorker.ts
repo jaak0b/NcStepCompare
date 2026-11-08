@@ -6,7 +6,8 @@ import { autoOrient as rankPlacements } from '../engine/autoOrient'
 import { DeviationTracker, toleranceLimits } from '../engine/deviation'
 import { spoilboardFindings, toolChangeFindings } from '../engine/findings/jobFindings'
 import { moveFindings, type FindingMoves } from '../engine/findings/moveFindings'
-import { stockFindings } from '../engine/findings/stockFindings'
+import { analyseStock } from '../engine/findings/stockFindings'
+import { cellClasses, missingMaterial } from '../engine/comparisonView'
 import { mergePartGrids, rasterizePart } from '../engine/modelGrid'
 import { MaterialSimulation, planCheckpoints } from '../engine/simulation'
 import { cutterProfile, type CutterProfile } from '../engine/toolShape'
@@ -137,7 +138,7 @@ function runCompare() {
     const g = sim.grid
     if (req.parts.length === 0) {
       comparison = null
-      post({ type: 'comparison', requestId: req.requestId, limits: null, deviation: null, findings: [], rasterizeMs: 0, limitsMs: 0 })
+      post({ type: 'comparison', requestId: req.requestId, limits: null, deviation: null, findings: [], classes: null, missing: null, rasterizeMs: 0, limitsMs: 0 })
       return
     }
     const t0 = performance.now()
@@ -150,7 +151,7 @@ function runCompare() {
     const t2 = performance.now()
     comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights)
     // Findings are on the final stock, whatever move playback shows.
-    const findings = stockFindings({
+    const { findings, threadMask } = analyseStock({
       grid: g,
       heights: finalHeights!,
       model,
@@ -160,6 +161,8 @@ function runCompare() {
       moveLine: moves!.line,
       threadMills,
     })
+    const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover)
+    const missing = missingMaterial(finalHeights!, model, limits, threadMask)
     const interleaved = new Float32Array(g.nx * g.ny * 2)
     for (let c = 0; c < g.nx * g.ny; c++) {
       interleaved[c * 2] = limits.gougeBelow[c]
@@ -172,10 +175,12 @@ function runCompare() {
         limits: interleaved,
         deviation: comparison.summary(),
         findings,
+        classes,
+        missing,
         rasterizeMs: t1 - t0,
         limitsMs: t2 - t1,
       },
-      [interleaved.buffer as ArrayBuffer],
+      [interleaved, classes, missing.cells, missing.bottom, missing.top, missing.thread].map((a) => a.buffer as ArrayBuffer),
     )
   } catch (err) {
     post({ type: 'error', message: messageOf(err), during: 'comparison', requestId: req.requestId })

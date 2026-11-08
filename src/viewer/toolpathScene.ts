@@ -6,6 +6,8 @@ import { MoveType, type MoveList } from '../engine/moveList'
 import type { Box3D } from '../engine/stock'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
+import type { MissingMaterial } from '../engine/comparisonView'
+import { missingMaterialMesh } from './missingMaterial'
 import { StockSurface } from './stockSurface'
 
 const CUTTING_COLOR = 0x1f6fd1
@@ -13,7 +15,7 @@ const RAPID_COLOR = 0xe8590c
 const STOCK_COLOR = 0x6b7280
 const TOOL_MARKER_COLOR = 0xd9a400
 const PART_OUTLINE_COLOR = 0x1d2733
-const FINDING_COLOR = 0xc026d3
+const FINDING_COLOR = 0x0891b2
 /** Smallest radius the camera frames around a finding, mm, so a one-cell finding is not filled edge to edge. */
 const MIN_FINDING_VIEW_RADIUS_MM = 3
 /** Faces meeting at a smaller angle than this (degrees) share no outline edge. */
@@ -69,6 +71,9 @@ export class ToolpathScene {
     polygonOffsetUnits: 1,
   })
   private stockSurface: StockSurface | null = null
+  private grid: GridInfo | null = null
+  private missing: THREE.Mesh | null = null
+  private missingVisible = false
   /** Box around the selected finding, drawn over everything like the outline. */
   private findingBox: THREE.Box3Helper | null = null
   /** CPU time of the last renderer.render call in ms, measured (GPU work runs after it). */
@@ -181,6 +186,7 @@ export class ToolpathScene {
   /** Shows the machined stock from the whole simulation grid. */
   setStockGrid(grid: GridInfo, heights: Float32Array): void {
     this.clearStock()
+    this.grid = grid
     this.stockSurface = new StockSurface(this.renderer, this.scene, grid, heights)
     this.requestRender()
   }
@@ -191,10 +197,37 @@ export class ToolpathScene {
     this.requestRender()
   }
 
-  /** Colours the stock by the comparison limits (see StockSurface.setLimits), or plain for null. */
-  setStockLimits(limits: Float32Array | null): void {
-    this.stockSurface?.setLimits(limits)
+  /** Colours the stock by the comparison limits and cell classes (see StockSurface.setLimits), or plain for null. */
+  setStockLimits(limits: Float32Array | null, classes: Uint8Array | null): void {
+    this.stockSurface?.setLimits(limits, classes)
     this.requestRender()
+  }
+
+  /** The material the model needs but the G-code cut away (see missingMaterial), or none for null. */
+  setMissingMaterial(m: MissingMaterial | null): void {
+    this.clearMissing()
+    if (m && this.grid) {
+      this.missing = missingMaterialMesh(this.grid, m)
+      if (this.missing) {
+        this.missing.visible = this.missingVisible
+        this.scene.add(this.missing)
+      }
+    }
+    this.requestRender()
+  }
+
+  setMissingMaterialVisible(visible: boolean): void {
+    this.missingVisible = visible
+    if (this.missing) this.missing.visible = visible
+    this.requestRender()
+  }
+
+  private clearMissing(): void {
+    if (!this.missing) return
+    this.scene.remove(this.missing)
+    this.missing.geometry.dispose()
+    ;(this.missing.material as THREE.Material).dispose()
+    this.missing = null
   }
 
   /**
@@ -251,9 +284,6 @@ export class ToolpathScene {
       const direction = this.camera.position.clone().sub(this.controls.target).normalize()
       this.controls.target.copy(sphere.center)
       this.camera.position.copy(sphere.center).addScaledVector(direction, distance)
-      this.camera.near = distance / 1000
-      this.camera.far = distance * 100
-      this.camera.updateProjectionMatrix()
       this.controls.update()
       this.userMovedCamera = true
     }
@@ -279,6 +309,7 @@ export class ToolpathScene {
   clearStock(): void {
     this.stockSurface?.dispose()
     this.stockSurface = null
+    this.clearMissing()
     this.requestRender()
   }
 
@@ -372,11 +403,27 @@ export class ToolpathScene {
     const direction = new THREE.Vector3(0, -1, 0.8).normalize()
     this.controls.target.copy(sphere.center)
     this.camera.position.copy(sphere.center).addScaledVector(direction, distance)
-    this.camera.near = distance / 1000
-    this.camera.far = distance * 100
-    this.camera.updateProjectionMatrix()
     this.controls.update()
     this.requestRender()
+  }
+
+  /**
+   * Near and far planes for the current camera: the near plane a thousandth of the distance to the
+   * orbit target (depth precision follows it when zooming in), the far plane beyond the farthest
+   * point of the job's region seen from the camera, so nothing drawn is clipped after any zoom.
+   */
+  private updateClipPlanes(): void {
+    const d = Math.max(this.camera.position.distanceTo(this.controls.target), 1e-3)
+    let far = d * 100
+    if (this.fitBox) {
+      const sphere = this.fitBox.getBoundingSphere(new THREE.Sphere())
+      far = Math.max(far, (this.camera.position.distanceTo(sphere.center) + sphere.radius) * 1.01)
+    }
+    if (this.camera.near !== d / 1000 || this.camera.far !== far) {
+      this.camera.near = d / 1000
+      this.camera.far = far
+      this.camera.updateProjectionMatrix()
+    }
   }
 
   private resize(): void {
@@ -394,6 +441,7 @@ export class ToolpathScene {
     this.frameHandle = requestAnimationFrame(() => {
       this.frameHandle = null
       const t0 = performance.now()
+      this.updateClipPlanes()
       this.stockSurface?.updateView(this.camera)
       this.renderer.render(this.scene, this.camera)
       if ((this.outlineGroup.visible && this.outlines.size > 0) || this.findingBox) {

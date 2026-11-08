@@ -62,6 +62,8 @@ const cellSizeSource = ref<SettingSource>('assumed')
 const tolerances = ref<Tolerances>({ gouge: DEFAULT_GOUGE_TOLERANCE_MM, leftover: DEFAULT_LEFTOVER_TOLERANCE_MM })
 const toleranceSources = ref<Record<keyof Tolerances, SettingSource>>({ gouge: 'assumed', leftover: 'assumed' })
 const outlinesVisible = ref(true)
+const missingVisible = ref(false)
+const playback = ref<InstanceType<typeof PlaybackControls> | null>(null)
 /** Placement per loaded part id. */
 const placements = ref<Record<string, PartPlacement>>({})
 let nextPartId = 1
@@ -258,10 +260,10 @@ function startSimulation() {
       },
       onComparison: (r) => {
         if (r.requestId !== latestCompare) return
-        viewer.value?.setStockLimits(r.limits)
+        viewer.value?.setStockLimits(r.limits, r.classes)
+        viewer.value?.setMissingMaterial(r.missing)
         deviation.value = r.deviation
         stockFindings.value = r.findings
-        if (selectedFinding.value && !findings.value.includes(selectedFinding.value)) selectFinding(null)
         comparisonTiming.value = r.limits ? { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs } : null
         comparisonRunning.value = false
         comparisonError.value = null
@@ -291,6 +293,9 @@ function startSimulation() {
         if (during === 'comparison') {
           if (requestId !== latestCompare) return
           comparisonError.value = message
+          // The stock findings and the missing material belonged to the comparison that failed.
+          clearStockFindings()
+          viewer.value?.setMissingMaterial(null)
           comparisonRunning.value = false
           return
         }
@@ -342,10 +347,18 @@ const sameParts = (a: PlacedPart[], b: PlacedPart[] | undefined) =>
   !!b && a.length === b.length && a.every((p, k) => p === b[k])
 
 
+/** Removes the stock findings (gouge, thread, leftover), and the selection when it is one of them. */
+function clearStockFindings() {
+  if (selectedFinding.value && stockFindings.value.includes(selectedFinding.value)) selectFinding(null)
+  stockFindings.value = []
+}
+
 function requestCompare() {
   if (simStatus.value !== 'ready') return
   latestCompare++
   comparisonRunning.value = placedParts.value.length > 0
+  // The old stock findings no longer match the parts or tolerances; the new ones come with the result.
+  clearStockFindings()
   comparisonError.value = null
   simClient.compare(latestCompare, placedParts.value, tolerances.value)
 }
@@ -431,7 +444,12 @@ function orientState(id: string): OrientState {
 function selectFinding(f: Finding | null) {
   selectedFinding.value = f
   viewer.value?.showFinding(f?.box ?? null)
-  if (f?.moves) seek(f.moves.last + 1)
+  if (!f) return
+  // The finding's state stays on screen: playback stops there.
+  playback.value?.pause()
+  const count = loaded.value?.job.moves.count ?? 0
+  // A move finding shows the stock after its move; a stock finding describes the finished job.
+  seek(f.moves ? f.moves.last + 1 : count)
 }
 
 function seek(index: number) {
@@ -569,8 +587,10 @@ function setAllToolpaths(visible: boolean) {
           :running="comparisonRunning"
           :error="comparisonError"
           :outlines-visible="outlinesVisible"
+          :missing-visible="missingVisible"
           @tolerance="setTolerance"
           @update:outlines-visible="outlinesVisible = $event"
+          @update:missing-visible="missingVisible = $event"
         />
         <FindingsPanel
           v-if="simStatus === 'ready'"
@@ -603,9 +623,11 @@ function setAllToolpaths(visible: boolean) {
           :rapids-visible="rapidsVisible"
           :tool-marker="toolMarker"
           :outlines-visible="outlinesVisible"
+          :missing-visible="missingVisible"
         />
       </div>
       <PlaybackControls
+        ref="playback"
         v-if="loaded && simStatus === 'ready'"
         :move-count="loaded.job.moves.count"
         :shown-index="shownIndex"

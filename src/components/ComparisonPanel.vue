@@ -18,10 +18,12 @@ const props = defineProps<{
   running: boolean
   error: string | null
   outlinesVisible: boolean
+  missingVisible: boolean
 }>()
 const emit = defineEmits<{
   tolerance: [which: keyof Tolerances, value: number]
   'update:outlinesVisible': [visible: boolean]
+  'update:missingVisible': [visible: boolean]
 }>()
 
 const texts = ref({ gouge: '', leftover: '' })
@@ -73,6 +75,14 @@ const cells = (n: number) => n.toLocaleString('en-US')
       />
       Show the STEP model outline
     </label>
+    <label class="toggle">
+      <input
+        type="checkbox"
+        :checked="missingVisible"
+        @change="emit('update:missingVisible', ($event.target as HTMLInputElement).checked)"
+      />
+      Show missing material: what the model needs but the G-code cut away, on the finished stock
+    </label>
     <p v-if="running" class="note">Comparing the stock with the placed parts.</p>
     <p v-if="error" class="problem">Comparison failed: {{ error }}</p>
     <template v-if="deviation">
@@ -108,6 +118,7 @@ const cells = (n: number) => n.toLocaleString('en-US')
       </p>
       <div class="legend">
         <span><i :style="{ background: DEVIATION_COLORS.gouge }"></i>Gouge: cut deeper than the model</span>
+        <span><i :style="{ background: DEVIATION_COLORS.thread }"></i>Thread: hole widened by a thread mill</span>
         <span><i :style="{ background: DEVIATION_COLORS.leftover }"></i>Leftover: material above the model</span>
         <span><i :style="{ background: DEVIATION_COLORS.within }"></i>Within tolerance</span>
       </div>

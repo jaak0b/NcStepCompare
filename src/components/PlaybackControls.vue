@@ -47,6 +47,8 @@ function pause() {
   handle = null
 }
 
+defineExpose({ pause })
+
 function onSlider(event: Event) {
   emit('seek', Number((event.target as HTMLInputElement).value))
 }

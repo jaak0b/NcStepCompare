@@ -7,7 +7,12 @@
 // exactly and never beyond it. A wall between two cells is drawn as a slope across one cell width
 // (0.05 mm by default). Side walls run down every stock edge to the stock bottom. Faces are
 // flat-shaded from screen-space derivatives. Where the material is cut down to the stock bottom or
-// below, the surface is discarded, so through-cuts show as openings.
+// below, the surface is discarded, so through-cuts show as openings. One rule decides openings for the
+// top surface, the bottom face and the side walls alike: a vertex of a cell at or below the stock
+// bottom is drawn one cell below it. Interpolated heights inside an opening then lie clearly below
+// the stock bottom (a cell cut exactly to the stock bottom would otherwise interpolate to values on
+// both sides of it and show as speckle), and a wall from a cell with material down to an opening
+// still crosses the stock bottom between the two cells.
 //
 // The stock is drawn as a closed solid: the same tile drawn at the stock bottom Z forms the bottom
 // face, with the same openings (the discard rule uses the same interpolated heights, so its edge
@@ -23,7 +28,9 @@
 // machined height with them, so the deviation colours follow playback with no extra work. Each
 // fragment takes the class of the highest of the cells around it, so a wall is coloured by its
 // material side. Cells outside the part outlines are compared with the stock bottom, so material
-// left there shows as leftover.
+// left there shows as leftover. A third texture holds a class byte per cell (see comparisonView):
+// cells of a thread finding are drawn in the thread colour instead of the gouge colour, and the
+// bottom face is coloured by whether the part above it sits on the stock bottom (never as a gouge).
 //
 // Drawing cost is bounded per frame with chunked level of detail (Ulrich, "Rendering massive
 // terrains using chunked level of detail control", 2002), driven by a screen-space error bound:
@@ -60,10 +67,12 @@ uniform float uBottom;
 uniform highp sampler2D uTileStep;
 uniform ivec2 uTiles;
 
-// Vertex (k, l) with k in [0, nx + 1]: k = 0 is the stock edge, k = 1..nx the cell centres.
+// Vertex (k, l) with k in [0, nx + 1]: k = 0 is the stock edge, k = 1..nx the cell centres. A cell
+// at or below the stock bottom is an opening: its vertex goes one cell below the stock bottom.
 float vertexHeight(ivec2 v) {
   ivec2 c = clamp(v - 1, ivec2(0), uGridSize - 1);
-  return texelFetch(uHeights, c, 0).r;
+  float h = texelFetch(uHeights, c, 0).r;
+  return h <= uBottom ? uBottom - uCellSize : h;
 }
 
 vec2 vertexXY(ivec2 v) {
@@ -153,6 +162,7 @@ void main() {
 const FRAGMENT = /* glsl */ `
 uniform highp sampler2D uHeights;
 uniform highp sampler2D uLimits;
+uniform highp usampler2D uClasses;
 uniform bool uCompare;
 uniform ivec2 uGridSize;
 uniform float uCellSize;
@@ -162,6 +172,7 @@ uniform vec3 uColor;
 uniform vec3 uGougeColor;
 uniform vec3 uLeftoverColor;
 uniform vec3 uWithinColor;
+uniform vec3 uThreadColor;
 in vec3 vWorld;
 in float vHeight;
 in vec2 vXY;
@@ -172,7 +183,22 @@ void main() {
   if (vHeight <= uBottom) discard;
 #endif
   vec3 color = uColor;
-#ifndef BOTTOM_FACE
+#ifdef BOTTOM_FACE
+  if (uCompare) {
+    // The cell above this point of the bottom face.
+    ivec2 c = clamp(ivec2(floor((vXY - uOrigin) / uCellSize)), ivec2(0), uGridSize - 1);
+    uint bottomClass = texelFetch(uClasses, c, 0).r & 3u;
+    if (bottomClass == 1u) {
+      color = uWithinColor;
+    } else if (bottomClass == 2u) {
+      color = uLeftoverColor;
+    } else {
+      // Outside every part: the class of the cell's top, never a gouge.
+      float h = texelFetch(uHeights, c, 0).r;
+      color = h > texelFetch(uLimits, c, 0).g ? uLeftoverColor : uWithinColor;
+    }
+  }
+#else
   if (uCompare) {
     // A fragment lies between the centres of up to 2 x 2 cells. It takes the class of the highest of
     // them: a wall is the slope from a high cell down to a low one, so the wall shows the material
@@ -189,7 +215,8 @@ void main() {
       }
     }
     vec2 limit = texelFetch(uLimits, c, 0).rg;
-    color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
+    bool thread = (texelFetch(uClasses, c, 0).r & 4u) != 0u;
+    color = h < limit.r ? (thread ? uThreadColor : uGougeColor) : (h > limit.g ? uLeftoverColor : uWithinColor);
   }
 #endif
   vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
@@ -201,7 +228,7 @@ void main() {
 `
 
 /** Deviation colours, shared with the legend. */
-export const DEVIATION_COLORS = { gouge: '#d63c3c', leftover: '#2f66d0', within: '#8fc48a' }
+export const DEVIATION_COLORS = { gouge: '#d63c3c', thread: '#8b3fd9', leftover: '#2f66d0', within: '#8fc48a' }
 
 /** Tiles of one vertex step and shader variant, drawn as one instanced mesh each for top and bottom. */
 interface TileBatch {
@@ -214,6 +241,7 @@ interface TileBatch {
 export class StockSurface {
   private readonly texture: THREE.DataTexture
   private limitsTexture: THREE.DataTexture
+  private classesTexture: THREE.DataTexture
   private readonly group = new THREE.Group()
   private readonly skirt: THREE.Mesh
   private readonly uniforms: Record<string, THREE.IUniform>
@@ -265,15 +293,18 @@ export class StockSurface {
     this.stepTexture.needsUpdate = true
 
     this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
+    this.classesTexture = StockSurface.classesTextureFrom(new Uint8Array(1), 1, 1)
     this.uniforms = {
       uHeights: { value: this.texture },
       uLimits: { value: this.limitsTexture },
+      uClasses: { value: this.classesTexture },
       uTileStep: { value: this.stepTexture },
       uTiles: { value: new THREE.Vector2(this.tilesX, this.tilesY) },
       uCompare: { value: false },
       uGougeColor: { value: new THREE.Color(DEVIATION_COLORS.gouge) },
       uLeftoverColor: { value: new THREE.Color(DEVIATION_COLORS.leftover) },
       uWithinColor: { value: new THREE.Color(DEVIATION_COLORS.within) },
+      uThreadColor: { value: new THREE.Color(DEVIATION_COLORS.thread) },
       uGridSize: { value: new THREE.Vector2(nx, ny) },
       uCellSize: { value: grid.cellSize },
       uOrigin: { value: new THREE.Vector2(grid.originX, grid.originY) },
@@ -410,10 +441,16 @@ export class StockSurface {
 
   /**
    * Shows the comparison: per cell, interleaved, the gouge and leftover limit heights (-Infinity for
-   * no gouge limit). Null shows plain stock.
+   * no gouge limit), and the class byte per cell. Null shows plain stock.
    */
-  setLimits(limits: Float32Array | null): void {
+  setLimits(limits: Float32Array | null, classes: Uint8Array | null): void {
     this.limitsTexture.dispose()
+    this.classesTexture.dispose()
+    this.classesTexture =
+      limits && classes
+        ? StockSurface.classesTextureFrom(classes, this.grid.nx, this.grid.ny)
+        : StockSurface.classesTextureFrom(new Uint8Array(1), 1, 1)
+    this.uniforms.uClasses.value = this.classesTexture
     if (!limits) {
       this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
       this.uniforms.uCompare.value = false
@@ -427,6 +464,17 @@ export class StockSurface {
       this.uniforms.uCompare.value = true
     }
     this.uniforms.uLimits.value = this.limitsTexture
+  }
+
+  private static classesTextureFrom(data: Uint8Array, w: number, h: number): THREE.DataTexture {
+    const t = new THREE.DataTexture(data, w, h, THREE.RedIntegerFormat, THREE.UnsignedByteType)
+    t.internalFormat = 'R8UI'
+    t.minFilter = THREE.NearestFilter
+    t.magFilter = THREE.NearestFilter
+    t.generateMipmaps = false
+    t.unpackAlignment = 1
+    t.needsUpdate = true
+    return t
   }
 
   private static limitsTextureFrom(data: Float32Array, w: number, h: number): THREE.DataTexture {
@@ -445,6 +493,7 @@ export class StockSurface {
     for (const m of this.materials) m.dispose()
     this.texture.dispose()
     this.limitsTexture.dispose()
+    this.classesTexture.dispose()
     this.stepTexture.dispose()
   }
 
