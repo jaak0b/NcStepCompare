@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cellDeviation, footprintBounds, summarizeDeviation, toleranceLimits } from '../src/engine/deviation'
+import { cellDeviation, DeviationTracker, footprintBounds, toleranceLimits } from '../src/engine/deviation'
 import { mergePartGrids, rasterizePart } from '../src/engine/modelGrid'
 import { placePositions } from '../src/engine/partPlacement'
 
@@ -43,7 +43,7 @@ const at = (i: number, j: number) => j * grid.nx + i
 
 describe('model grid rasterisation', () => {
   const mesh = plateWithHole()
-  const model = mergePartGrids(grid, [rasterizePart(grid, mesh.positions, mesh.indices)])
+  const { top: model, throughFloor } = mergePartGrids(grid, [rasterizePart(grid, mesh.positions, mesh.indices)])
 
   it('takes the top face height at each cell centre, not the bottom face', () => {
     expect(model[at(1, 1)]).toBeCloseTo(-0.975, 5) // centre (0.05, 0.05)
@@ -54,6 +54,12 @@ describe('model grid rasterisation', () => {
   it('marks the cells inside the hole as cut through', () => {
     expect(model[at(5, 5)]).toBe(-Infinity)
     expect(model[at(6, 6)]).toBe(-Infinity)
+  })
+
+  it("measures a through-hole against its own part's bottom (Z -2), not the stock bottom", () => {
+    expect(throughFloor[at(5, 5)]).toBe(-2)
+    expect(cellDeviation(-1.5, model[at(5, 5)], throughFloor[at(5, 5)])).toBe(0.5)
+    expect(cellDeviation(-2.3, model[at(5, 5)], throughFloor[at(5, 5)])).toBe(0)
   })
 
   it('leaves cells outside the plate outline without a model height', () => {
@@ -77,26 +83,45 @@ describe('deviation', () => {
 
   // A wall between a top at Z -1 (cells 0..2) and a floor at Z -3 (cells 3..5), 0.05 mm cells.
   const row = { nx: 6, ny: 1, cellSize: 0.05, originX: 0, originY: 0 }
-  const model = Float32Array.from([-1, -1, -1, -3, -3, -3])
-  const tolerances = { gouge: 0.05, leftover: 0.1 }
+  const model = { top: Float32Array.from([-1, -1, -1, -3, -3, -3]), throughFloor: new Float32Array(6).fill(NaN) }
+  const tight = { gouge: 0.05, leftover: 0.1 }
+  const summaryFor = (machined: number[], tolerances: { gouge: number; leftover: number }) => {
+    const bounds = footprintBounds(row, model)
+    return new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, bounds), bounds, Float32Array.from(machined)).summary()
+  }
 
   it('accepts a wall cut one cell (0.05 mm, the gouge tolerance) too far as within tolerance', () => {
-    const machined = Float32Array.from([-1, -1, -3, -3, -3, -3])
-    const limits = toleranceLimits(row, model, -10, tolerances)
-
-    const s = summarizeDeviation(row.nx, machined, model, limits, -10, footprintBounds(row, model))
-
-    expect(s.gougeCells).toBe(0)
+    expect(summaryFor([-1, -1, -3, -3, -3, -3], tight).gougeCells).toBe(0)
   })
 
   it('reports a gouge where the wall is cut two cells (0.10 mm) too far', () => {
-    const machined = Float32Array.from([-1, -3, -3, -3, -3, -3])
-    const limits = toleranceLimits(row, model, -10, tolerances)
-
-    const s = summarizeDeviation(row.nx, machined, model, limits, -10, footprintBounds(row, model))
+    const s = summaryFor([-1, -3, -3, -3, -3, -3], tight)
 
     expect(s.gougeCells).toBe(1)
     expect(s.maxGougeDepth).toBe(2)
+  })
+
+  it('with a 0.1 mm gouge tolerance accepts two cells too far and reports three', () => {
+    const loose = { gouge: 0.1, leftover: 0.1 }
+
+    expect(summaryFor([-1, -3, -3, -3, -3, -3], loose).gougeCells).toBe(0)
+    expect(summaryFor([-3, -3, -3, -3, -3, -3], loose).gougeCells).toBe(1)
+  })
+
+  it('updates the summary from the changed cells only, forward and back', () => {
+    const bounds = footprintBounds(row, model)
+    const machined = Float32Array.from([-1, -1, -3, -3, -3, -3])
+    const tracker = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tight, bounds), bounds, machined)
+
+    machined[1] = -3
+    tracker.update(machined, { minI: 1, maxI: 1, minJ: 0, maxJ: 0 })
+    const cut = tracker.summary()
+    machined[1] = -1
+    tracker.update(machined, { minI: 1, maxI: 1, minJ: 0, maxJ: 0 })
+    const restored = tracker.summary()
+
+    expect([cut.gougeCells, cut.maxGougeDepth]).toEqual([1, 2])
+    expect([restored.gougeCells, restored.maxGougeDepth]).toEqual([0, 0])
   })
 })
 

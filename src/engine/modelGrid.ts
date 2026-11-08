@@ -20,6 +20,8 @@ export const MODEL_THROUGH = Number.NEGATIVE_INFINITY
 
 /** Model heights for one part over its own cell rectangle (one cell margin around the part). */
 export interface PartModelGrid {
+  /** Lowest Z of the placed part: through-holes should be cut down to here. */
+  bottomZ: number
   i0: number
   j0: number
   w: number
@@ -35,7 +37,9 @@ export function rasterizePart(g: GridGeometry, positions: Float32Array, indices:
   let minY = Infinity
   let maxX = -Infinity
   let maxY = -Infinity
+  let bottomZ = Infinity
   for (let k = 0; k < positions.length; k += 3) {
+    if (positions[k + 2] < bottomZ) bottomZ = positions[k + 2]
     if (positions[k] < minX) minX = positions[k]
     if (positions[k] > maxX) maxX = positions[k]
     if (positions[k + 1] < minY) minY = positions[k + 1]
@@ -49,7 +53,7 @@ export function rasterizePart(g: GridGeometry, positions: Float32Array, indices:
   const w = Math.max(0, i1 - i0 + 1)
   const h = Math.max(0, j1 - j0 + 1)
   const top = new Float32Array(w * h).fill(MODEL_THROUGH)
-  if (w === 0 || h === 0) return { i0, j0, w, h, top }
+  if (w === 0 || h === 0) return { bottomZ, i0, j0, w, h, top }
 
   const xs = [0, 0, 0]
   const ys = [0, 0, 0]
@@ -117,7 +121,7 @@ export function rasterizePart(g: GridGeometry, positions: Float32Array, indices:
   }
 
   markOutside(top, w, h)
-  return { i0, j0, w, h, top }
+  return { bottomZ, i0, j0, w, h, top }
 }
 
 /** Flood fill of uncovered cells from the rectangle border: those become MODEL_OUTSIDE. */
@@ -147,22 +151,34 @@ function markOutside(top: Float32Array, w: number, h: number): void {
   }
 }
 
+/** Model of all placed parts over the whole simulation grid. */
+export interface ModelGrid {
+  /** Model top Z, MODEL_THROUGH or MODEL_OUTSIDE per cell. */
+  top: Float32Array
+  /** For through-hole cells: the bottom Z of the part the hole belongs to; NaN elsewhere. */
+  throughFloor: Float32Array
+}
+
 /**
  * Model grid over the whole simulation grid from several parts. Where parts overlap, the higher
- * material wins; a through-hole of one part stays open only where no other part has material.
+ * material wins; a through-hole of one part stays open only where no other part has material, and
+ * then reaches down to the lowest bottom among the parts that have the hole there.
  */
-export function mergePartGrids(g: GridGeometry, parts: PartModelGrid[]): Float32Array {
-  const model = new Float32Array(g.nx * g.ny).fill(MODEL_OUTSIDE)
+export function mergePartGrids(g: GridGeometry, parts: PartModelGrid[]): ModelGrid {
+  const top = new Float32Array(g.nx * g.ny).fill(MODEL_OUTSIDE)
+  const throughFloor = new Float32Array(g.nx * g.ny).fill(Number.NaN)
   for (const p of parts) {
     for (let j = 0; j < p.h; j++) {
       for (let i = 0; i < p.w; i++) {
         const v = p.top[j * p.w + i]
         if (Number.isNaN(v)) continue
         const c = (p.j0 + j) * g.nx + p.i0 + i
-        const old = model[c]
-        if (Number.isNaN(old) || v > old) model[c] = v
+        const old = top[c]
+        if (Number.isNaN(old) || v > old) top[c] = v
+        if (v === MODEL_THROUGH && !(throughFloor[c] <= p.bottomZ)) throughFloor[c] = p.bottomZ
       }
     }
   }
-  return model
+  for (let c = 0; c < top.length; c++) if (top[c] !== MODEL_THROUGH) throughFloor[c] = Number.NaN
+  return { top, throughFloor }
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
-import { footprintBounds, rankOrientations, summarizeDeviation, toleranceLimits } from '../src/engine/deviation'
+import { DeviationTracker, footprintBounds, rankOrientations, toleranceLimits } from '../src/engine/deviation'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { mergePartGrids, rasterizePart } from '../src/engine/modelGrid'
 import { placePositions, type PartPlacement } from '../src/engine/partPlacement'
@@ -53,7 +53,8 @@ function clusterSizes(nx: number, ny: number, cellSize: number, flagged: Uint8Ar
 describe('backplate fixture against its STEP model', async () => {
   const require = createRequire(import.meta.url)
   const occt: OcctModule = await require('occt-import-js')()
-  const part = readStepPart(occt, readFileSync(new URL('../fixtures/V2 Backplate 6.11 v93.step', import.meta.url)), 'backplate.step')
+  // Tessellated at 0.005 mm, a tenth of the 0.05 mm gouge tolerance (the app's rule).
+  const part = readStepPart(occt, readFileSync(new URL('../fixtures/V2 Backplate 6.11 v93.step', import.meta.url)), 'backplate.step', 0.005)
   const job = parseGcode(readFileSync(new URL('../fixtures/Z1 Pro - Backplate CM_TOP_210320.nc', import.meta.url), 'utf8'))
   const tools = new Map<number, CutterProfile>()
   for (const t of buildToolTable(job.header.tools, [])) tools.set(t.number, cutterProfile(t) as CutterProfile)
@@ -69,7 +70,7 @@ describe('backplate fixture against its STEP model', async () => {
   })
 
   it('auto-orient picks the thickness along model Y, turned so the part matches the cut', () => {
-    const ranked = rankOrientations(sim.grid, sim.grid.heights, -10, part.mesh, placement)
+    const ranked = rankOrientations(sim.grid, sim.grid.heights, part.mesh, placement)
 
     expect([ranked[0].upAxis, ranked[0].quarterTurns]).toEqual(['-Y', 2])
   })
@@ -86,12 +87,12 @@ describe('backplate fixture against its STEP model', async () => {
     const g = sim.grid
     const model = mergePartGrids(g, [rasterizePart(g, placePositions(part.mesh, placement), part.mesh.indices)])
     const bounds = footprintBounds(g, model)
-    const limits = toleranceLimits(g, model, g.bottom, { gouge: 0.05, leftover: 0.1 }, bounds)
+    const limits = toleranceLimits(g, model, { gouge: 0.05, leftover: 0.1 }, bounds)
     const gouge = new Uint8Array(g.nx * g.ny)
     for (let c = 0; c < gouge.length; c++) gouge[c] = g.heights[c] < limits.gougeBelow[c] ? 1 : 0
 
     const clusters = clusterSizes(g.nx, g.ny, g.cellSize, gouge)
-    const summary = summarizeDeviation(g.nx, g.heights, model, limits, g.bottom, bounds)
+    const summary = new DeviationTracker(g.nx, model, limits, bounds, g.heights).summary()
 
     expect(summary.gougeCells).toBeGreaterThan(0)
     expect(clusters).toHaveLength(11)

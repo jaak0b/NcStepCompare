@@ -1,14 +1,21 @@
 // STEP model as a triangle mesh, read with occt-import-js (OpenCascade's STEP reader and BRepMesh
 // tessellation). The caller passes the initialised occt module, so the browser worker and the tests
 // share this code. All bodies in one file are merged into one mesh: one STEP file is one part.
+import type { Tolerances } from './deviation'
 import type { Box3D } from './stock'
 
 /**
- * Tessellation chord deviation in mm (OpenCascade "linear deflection", absolute). Each triangle
- * lies within this distance of the true surface. Assumed default, set well below the smallest
- * default tolerance (gouge 0.05 mm) so the mesh itself never reads as a gouge or leftover.
+ * Share of the smaller tolerance allowed as tessellation chord deviation (OpenCascade "linear
+ * deflection", absolute). The mesh error adds directly to every measured deviation, so it is held to
+ * a tenth of the tolerance band: the mesh then moves no reading by more than 10 % of the tolerance.
  */
-export const TESSELLATION_DEFLECTION_MM = 0.005
+export const TESSELLATION_SHARE_OF_TOLERANCE = 0.1
+
+/** Linear deflection in mm for the given tolerances. */
+export function tessellationDeflection(tol: Tolerances): number {
+  return Math.min(tol.gouge, tol.leftover) * TESSELLATION_SHARE_OF_TOLERANCE
+}
+
 /** Tessellation angular deflection in radians (OpenCascade default range), assumed. */
 export const TESSELLATION_ANGLE_RAD = 0.5
 
@@ -29,6 +36,8 @@ export interface StepPart {
   bounds: Box3D
   /** Length unit the file declares, or null when it declares none we can read. */
   fileUnit: string | null
+  /** Tessellation chord deviation used, mm. */
+  deflection: number
   readMs: number
 }
 
@@ -80,14 +89,14 @@ export function stepLengthUnit(text: string): string | null {
 }
 
 /** Reads a STEP file into one merged mesh in mm. Throws with a readable message on failure. */
-export function readStepPart(occt: OcctModule, bytes: Uint8Array, fileName: string): StepPart {
+export function readStepPart(occt: OcctModule, bytes: Uint8Array, fileName: string, deflection: number): StepPart {
   const t0 = performance.now()
   // Only the header and unit entities are needed as text; the reader parses the bytes itself.
   const text = new TextDecoder('latin1').decode(bytes)
   const result = occt.ReadStepFile(bytes, {
     linearUnit: 'millimeter',
     linearDeflectionType: 'absolute_value',
-    linearDeflection: TESSELLATION_DEFLECTION_MM,
+    linearDeflection: deflection,
     angularDeflection: TESSELLATION_ANGLE_RAD,
   })
   if (!result.success) throw new Error('OpenCascade could not read this file as STEP.')
@@ -122,6 +131,7 @@ export function readStepPart(occt: OcctModule, bytes: Uint8Array, fileName: stri
     triangleCount: indexCount / 3,
     bounds: meshBounds(positions),
     fileUnit: stepLengthUnit(text),
+    deflection,
     readMs: performance.now() - t0,
   }
 }

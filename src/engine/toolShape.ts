@@ -3,6 +3,7 @@
 // which the sweep relies on.
 
 export type CutterShapeKind = 'flat end mill' | 'ball end' | 'drill' | 'V-bit' | 'thread mill'
+export const CUTTER_SHAPE_KINDS: CutterShapeKind[] = ['flat end mill', 'ball end', 'drill', 'V-bit', 'thread mill']
 
 export interface CutterShape {
   kind: CutterShapeKind
