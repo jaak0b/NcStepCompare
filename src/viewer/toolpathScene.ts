@@ -28,9 +28,13 @@ export class ToolpathScene {
     transparent: true,
     opacity: 0.6,
   })
+  private readonly axes = new THREE.AxesHelper(10)
   private hiddenToolpaths = new Set<number>()
   private rapidsVisible = true
-  private frameRequested = false
+  private frameHandle: number | null = null
+  /** Region the camera is fitted to; refitted on resize until the user moves the camera. */
+  private fitBox: THREE.Box3 | null = null
+  private userMovedCamera = false
 
   constructor(private readonly container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -42,9 +46,11 @@ export class ToolpathScene {
     this.camera.position.set(75, -150, 150)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.addEventListener('change', () => this.requestRender())
+    this.controls.addEventListener('start', () => {
+      this.userMovedCamera = true
+    })
 
-    const axes = new THREE.AxesHelper(10)
-    this.scene.add(axes, this.jobGroup)
+    this.scene.add(this.axes, this.jobGroup)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
@@ -103,7 +109,15 @@ export class ToolpathScene {
       this.jobGroup.add(new THREE.Box3Helper(box, STOCK_COLOR))
     }
     this.applyVisibility()
-    this.frame(stockBox ?? pathBounds)
+
+    // Fit the camera to everything that is drawn: the stock and the toolpath extent.
+    const fit = new THREE.Box3()
+    for (const b of [stockBox, pathBounds]) {
+      if (b) fit.union(new THREE.Box3(new THREE.Vector3(b.min.x, b.min.y, b.min.z), new THREE.Vector3(b.max.x, b.max.y, b.max.z)))
+    }
+    this.fitBox = fit.isEmpty() ? null : fit
+    this.userMovedCamera = false
+    this.fitCamera()
   }
 
   setHiddenToolpaths(hidden: Set<number>): void {
@@ -117,12 +131,17 @@ export class ToolpathScene {
   }
 
   dispose(): void {
-    this.clearJob()
     this.resizeObserver.disconnect()
+    this.clearJob()
+    // clearJob schedules a frame; cancel it so nothing renders into the disposed renderer.
+    if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
+    this.frameHandle = null
+    this.axes.dispose()
     this.controls.dispose()
     this.cuttingMaterial.dispose()
     this.rapidMaterial.dispose()
     this.renderer.dispose()
+    this.renderer.forceContextLoss()
     this.renderer.domElement.remove()
   }
 
@@ -157,18 +176,23 @@ export class ToolpathScene {
     this.requestRender()
   }
 
-  private frame(box: Box3D | null): void {
-    if (!box) return
-    const centre = new THREE.Vector3(
-      (box.min.x + box.max.x) / 2,
-      (box.min.y + box.max.y) / 2,
-      (box.min.z + box.max.z) / 2,
-    )
-    const size = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1)
-    this.controls.target.copy(centre)
-    this.camera.position.set(centre.x, centre.y - size * 1.2, centre.z + size * 1.0)
-    this.camera.near = size / 1000
-    this.camera.far = size * 100
+  /**
+   * Places the camera so the bounding sphere of the fit box fills the view, using whichever of the
+   * vertical and horizontal field of view is tighter for the current aspect ratio.
+   */
+  private fitCamera(): void {
+    if (!this.fitBox) return
+    const sphere = this.fitBox.getBoundingSphere(new THREE.Sphere())
+    const radius = Math.max(sphere.radius, 1)
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov)
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect)
+    const distance = Math.max(radius / Math.sin(vFov / 2), radius / Math.sin(hFov / 2))
+    // View from the front, above the stock.
+    const direction = new THREE.Vector3(0, -1, 0.8).normalize()
+    this.controls.target.copy(sphere.center)
+    this.camera.position.copy(sphere.center).addScaledVector(direction, distance)
+    this.camera.near = distance / 1000
+    this.camera.far = distance * 100
     this.camera.updateProjectionMatrix()
     this.controls.update()
     this.requestRender()
@@ -180,14 +204,14 @@ export class ToolpathScene {
     this.renderer.setSize(w, h)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+    if (!this.userMovedCamera) this.fitCamera()
     this.requestRender()
   }
 
   private requestRender(): void {
-    if (this.frameRequested) return
-    this.frameRequested = true
-    requestAnimationFrame(() => {
-      this.frameRequested = false
+    if (this.frameHandle !== null) return
+    this.frameHandle = requestAnimationFrame(() => {
+      this.frameHandle = null
       this.renderer.render(this.scene, this.camera)
     })
   }

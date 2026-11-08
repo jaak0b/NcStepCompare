@@ -21,6 +21,10 @@ export function parseFileInWorker(file: File): Promise<LoadedJob> {
       if (r.ok) resolve({ ...r, fileName: file.name })
       else reject(new Error(r.message))
     }
+    worker.onmessageerror = () => {
+      worker.terminate()
+      reject(new Error('The parse result could not be received from the parser worker.'))
+    }
     worker.onerror = (event) => {
       worker.terminate()
       reject(new Error(event.message || 'The parser worker stopped unexpectedly.'))
