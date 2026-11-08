@@ -75,9 +75,9 @@ replaced by a dexel model (per cell a list of material segments along Z) as the 
 milestone 4, starting with a written design for owner approval.
 The 3D view must accurately show the milled result, undercuts included: rendering may never simplify
 the material shape (display speed is secondary to a correct picture).
-4th and more axes are refused: a G-code file with rotary axis words (A, B or C on a motion line) or a
-rotary setup in the Makera header is rejected on load with a clear message. Where a file gives no
-detectable sign, it is not refused.
+4th and more axes are refused: a G-code file with rotary axis words (A, B or C on a motion line) is
+rejected on load with a clear message. A cylinder stock alone is not refused (a round blank can be
+milled 3-axis). Design and owner answers: docs/dexel-design.md.
 
 Out of scope: machine travel-limit checks (the machine controller handles them).
 

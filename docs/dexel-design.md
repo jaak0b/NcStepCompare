@@ -1,6 +1,17 @@
 # Design: dexel material model
 
-Status: proposed, waiting for owner approval. Requirement: CLAUDE.md "Accuracy requirement".
+Status: approved in principle by the owner 2026-11-09. Requirement: CLAUDE.md "Accuracy requirement".
+
+Owner answers 2026-11-09:
+- Scope now: threads. Build the general profile core, but only the thread mill gets its full profile in
+  the tool table now; dovetail, T-slot, keyseat and lollipop tool types come later.
+- Thread mill data is entered by the user in the tool table: ISO 68-1 values prefilled and labelled
+  assumed, pitch required.
+- Neck and shank do not cut; material touching them is the non-cutting contact finding (Q1 as
+  recommended). Q3, Q4 as recommended.
+- Rotary refusal: only A, B or C words on a motion line. `STOCK id=cylinder` is NOT refused (a round
+  blank can be milled 3-axis); round stock is simulated as its bounding box until round stock support
+  is added later.
 
 ## 1. Data structure
 Single-direction Z dexels (van Hook, "Real-time shaded NC milling display", SIGGRAPH 1986). A 3-axis
@@ -77,11 +88,10 @@ instanced boxes (6M instances).
 
 ## 6. Migration (app and tests green after each step)
 0. Refuse rotary-axis files at the parser boundary (about 1 hour): an A, B or C word on a motion line
-   (`gcodeParser.ts` word switch) or a rotary setup in the Makera header (`STOCK id=cylinder`, already
-   mapped in `makeraHeader.ts`) rejects the job through the parse result with one clear message naming
+   (`gcodeParser.ts` word switch) rejects the job through the parse result with one clear message naming
    the line or field, e.g. "This file uses a rotary axis (A word on line 1234). NcStepCompare simulates
    3-axis milling only, so the job is not loaded." Files with no rotary sign load as today. Tests: A word
-   on G1 refused, cylinder header refused, fixture loads.
+   on G1 refused, cylinder stock header still loads, fixture loads.
 1. Profile tool model and bands; height-grid results bit-identical.
 2. `DexelStock` with tests (interval subtraction, pool growth, checkpoints).
 3. Dexel sweep and simulation on `DexelStock`; synthetic tests (T-slot gap, single-tooth helix groove
