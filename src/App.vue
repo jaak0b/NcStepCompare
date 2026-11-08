@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import ComparisonPanel from './components/ComparisonPanel.vue'
+import FindingsPanel from './components/FindingsPanel.vue'
 import JobSummary from './components/JobSummary.vue'
 import PartPanel from './components/PartPanel.vue'
 import PlaybackControls from './components/PlaybackControls.vue'
@@ -8,6 +9,7 @@ import SimulationPanel from './components/SimulationPanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
 import type { OrientationCandidate } from './engine/autoOrient'
+import { sortFindings, type Finding } from './engine/findings/finding'
 import { DEFAULT_GOUGE_TOLERANCE_MM, DEFAULT_LEFTOVER_TOLERANCE_MM, type DeviationSummary, type Tolerances } from './engine/deviation'
 import type { SettingSource } from './ui/sourceLabel'
 import { DEFAULT_CELL_SIZE_MM, cellSizeProblem } from './engine/heightGrid'
@@ -113,6 +115,11 @@ const comparisonRunning = ref(false)
 const comparisonError = ref<string | null>(null)
 /** Id of the latest compare request; results of older ones are dropped. */
 let latestCompare = 0
+/** Findings from the moves (with the simulation) and from the final stock (with the comparison). */
+const moveFindings = shallowRef<Finding[]>([])
+const stockFindings = shallowRef<Finding[]>([])
+const findings = computed(() => sortFindings([...stockFindings.value, ...moveFindings.value]))
+const selectedFinding = shallowRef<Finding | null>(null)
 
 const simClient = new SimulationClient()
 const simStatus = ref<'idle' | 'running' | 'ready' | 'error'>('idle')
@@ -184,6 +191,9 @@ function resetSimulation() {
   playIndex.value = 0
   shownIndex.value = 0
   deviation.value = null
+  moveFindings.value = []
+  stockFindings.value = []
+  selectFinding(null)
   comparisonRunning.value = false
   comparisonTiming.value = null
   // The worker is gone, so no auto-orient answer will come; the user can run it again.
@@ -203,7 +213,15 @@ function startSimulation() {
   // Plain copies: Vue proxies cannot be sent to a worker.
   const toolShapes = tools.value.map((t) => ({
     number: t.number,
-    shape: { kind: t.kind, diameter: t.diameter, cornerRadius: t.cornerRadius, tipAngle: t.tipAngle },
+    name: t.name,
+    kind: t.kind,
+    diameter: t.diameter,
+    cornerRadius: t.cornerRadius,
+    tipAngle: t.tipAngle,
+    fluteLength: t.fluteLength,
+    widthOfCutLimit: t.widthOfCutLimit,
+    depthOfCutLimit: t.depthOfCutLimit,
+    sources: { ...t.sources },
   }))
   const box = stock.value.box
   simClient.start(
@@ -211,12 +229,14 @@ function startSimulation() {
     { min: { ...box.min }, max: { ...box.max } },
     cellSize.value,
     toolShapes,
+    l.job.toolChanges.map((c) => ({ ...c })),
     {
       onProgress: (done, total) => {
         simProgress.value = total > 0 ? done / total : 1
       },
       onReady: (r) => {
         simResult.value = r
+        moveFindings.value = r.findings
         viewer.value?.setStockGrid(r.grid, r.heights)
         playIndex.value = r.moveIndex
         shownIndex.value = r.moveIndex
@@ -240,6 +260,8 @@ function startSimulation() {
         if (r.requestId !== latestCompare) return
         viewer.value?.setStockLimits(r.limits)
         deviation.value = r.deviation
+        stockFindings.value = r.findings
+        if (selectedFinding.value && !findings.value.includes(selectedFinding.value)) selectFinding(null)
         comparisonTiming.value = r.limits ? { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs } : null
         comparisonRunning.value = false
         comparisonError.value = null
@@ -405,6 +427,13 @@ function orientState(id: string): OrientState {
   return orientStates.value[id] ?? { running: false, candidates: null, ms: null, error: null }
 }
 
+/** Shows a finding: the camera frames it, and a move finding also sets playback to after its last move. */
+function selectFinding(f: Finding | null) {
+  selectedFinding.value = f
+  viewer.value?.showFinding(f?.box ?? null)
+  if (f?.moves) seek(f.moves.last + 1)
+}
+
 function seek(index: number) {
   if (simStatus.value !== 'ready') return
   playIndex.value = index
@@ -542,6 +571,15 @@ function setAllToolpaths(visible: boolean) {
           :outlines-visible="outlinesVisible"
           @tolerance="setTolerance"
           @update:outlines-visible="outlinesVisible = $event"
+        />
+        <FindingsPanel
+          v-if="simStatus === 'ready'"
+          :findings="findings"
+          :selected="selectedFinding"
+          :compared="placedParts.length > 0"
+          :comparison-running="comparisonRunning"
+          :toolpaths="toolpathStarts"
+          @select="selectFinding"
         />
         <ToolTable :tools="tools" @update="onToolsEdited" @reset="resetTool" />
         <JobSummary

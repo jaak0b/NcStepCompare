@@ -13,6 +13,9 @@ const RAPID_COLOR = 0xe8590c
 const STOCK_COLOR = 0x6b7280
 const TOOL_MARKER_COLOR = 0xd9a400
 const PART_OUTLINE_COLOR = 0x1d2733
+const FINDING_COLOR = 0xc026d3
+/** Smallest radius the camera frames around a finding, mm, so a one-cell finding is not filled edge to edge. */
+const MIN_FINDING_VIEW_RADIUS_MM = 3
 /** Faces meeting at a smaller angle than this (degrees) share no outline edge. */
 const OUTLINE_CREASE_ANGLE = 20
 
@@ -66,6 +69,8 @@ export class ToolpathScene {
     polygonOffsetUnits: 1,
   })
   private stockSurface: StockSurface | null = null
+  /** Box around the selected finding, drawn over everything like the outline. */
+  private findingBox: THREE.Box3Helper | null = null
   /** CPU time of the last renderer.render call in ms, measured (GPU work runs after it). */
   lastRenderMs = 0
   private readonly toolMarker: THREE.Mesh
@@ -218,6 +223,43 @@ export class ToolpathScene {
     this.requestRender()
   }
 
+  /**
+   * Marks a finding's region with a box and turns the camera to it, keeping the viewing direction.
+   * Null removes the box and leaves the camera.
+   */
+  showFinding(box: Box3D | null): void {
+    if (this.findingBox) {
+      this.outlineScene.remove(this.findingBox)
+      this.findingBox.geometry.dispose()
+      ;(this.findingBox.material as THREE.Material).dispose()
+      this.findingBox = null
+    }
+    if (box) {
+      const b = new THREE.Box3(
+        new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+        new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+      )
+      this.findingBox = new THREE.Box3Helper(b, FINDING_COLOR)
+      // Drawn through the parts and the stock: a gouge lies below the model surface.
+      ;(this.findingBox.material as THREE.LineBasicMaterial).depthTest = false
+      this.outlineScene.add(this.findingBox)
+      const sphere = b.getBoundingSphere(new THREE.Sphere())
+      const radius = Math.max(sphere.radius, MIN_FINDING_VIEW_RADIUS_MM)
+      const vFov = THREE.MathUtils.degToRad(this.camera.fov)
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect)
+      const distance = Math.max(radius / Math.sin(vFov / 2), radius / Math.sin(hFov / 2))
+      const direction = this.camera.position.clone().sub(this.controls.target).normalize()
+      this.controls.target.copy(sphere.center)
+      this.camera.position.copy(sphere.center).addScaledVector(direction, distance)
+      this.camera.near = distance / 1000
+      this.camera.far = distance * 100
+      this.camera.updateProjectionMatrix()
+      this.controls.update()
+      this.userMovedCamera = true
+    }
+    this.requestRender()
+  }
+
   setPartOutlinesVisible(visible: boolean): void {
     this.outlineGroup.visible = visible
     this.requestRender()
@@ -267,6 +309,7 @@ export class ToolpathScene {
     this.clearJob()
     this.clearStock()
     this.clearPartOutlines()
+    this.showFinding(null)
     this.outlineMaterial.dispose()
     this.outlineFaceMaterial.dispose()
     // Clearing schedules a frame; cancel it so nothing renders into the disposed renderer.
@@ -353,7 +396,7 @@ export class ToolpathScene {
       const t0 = performance.now()
       this.stockSurface?.updateView(this.camera)
       this.renderer.render(this.scene, this.camera)
-      if (this.outlineGroup.visible && this.outlines.size > 0) {
+      if ((this.outlineGroup.visible && this.outlines.size > 0) || this.findingBox) {
         this.renderer.autoClear = false
         this.renderer.clearDepth()
         this.renderer.render(this.outlineScene, this.camera)

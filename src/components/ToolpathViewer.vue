@@ -59,6 +59,7 @@ defineExpose({
   setPartOutlines: (parts: { id: string; positions: Float32Array; indices: Uint32Array }[]) =>
     scene?.setPartOutlines(parts),
   lastRenderMs: () => scene?.lastRenderMs ?? 0,
+  showFinding: (box: Box3D | null) => scene?.showFinding(box),
 })
 watch(
   () => props.outlinesVisible,
@@ -79,6 +80,7 @@ watch(
       <span><i class="swatch stock"></i>Stock</span>
       <span><i class="swatch tool"></i>Tool</span>
       <span><i class="swatch outline"></i>STEP outline</span>
+      <span><i class="swatch finding"></i>Selected finding</span>
     </div>
   </div>
 </template>
@@ -126,5 +128,8 @@ watch(
 }
 .outline {
   background: #1d2733;
+}
+.finding {
+  background: #c026d3;
 }
 </style>

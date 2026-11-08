@@ -1,10 +1,16 @@
 import type { OrientationCandidate } from '../engine/autoOrient'
 import type { DeviationSummary, Tolerances } from '../engine/deviation'
+import type { Finding } from '../engine/findings/finding'
+import type { FindingMoves, FindingTool } from '../engine/findings/moveFindings'
+import type { ToolChange } from '../engine/gcodeParser'
 import type { PartPlacement } from '../engine/partPlacement'
-import type { CellRect, SimulationMoves } from '../engine/simulation'
+import type { CellRect } from '../engine/simulation'
 import type { TriangleMesh } from '../engine/stepModel'
 import type { Box3D } from '../engine/stock'
 import type { CutterShape } from '../engine/toolShape'
+
+/** A tool table entry as the worker needs it: the cutter shape and the values the checks use. */
+export type WorkerTool = FindingTool & CutterShape
 
 /** Size and placement of the simulation grid, in work coordinates. */
 export interface GridInfo {
@@ -41,6 +47,8 @@ export interface ComparisonResult {
   limits: Float32Array | null
   /** Deviation at the stock state shown when the comparison was made. */
   deviation: DeviationSummary | null
+  /** Gouges, threads and leftover on the final stock; empty without parts. */
+  findings: Finding[]
   rasterizeMs: number
   limitsMs: number
 }
@@ -50,8 +58,9 @@ export type SimulationRequest =
       type: 'init'
       stock: Box3D
       cellSize: number
-      moves: SimulationMoves
-      tools: { number: number; shape: CutterShape }[]
+      moves: FindingMoves
+      tools: WorkerTool[]
+      toolChanges: ToolChange[]
     }
   | { type: 'seek'; moveIndex: number }
   | {
@@ -82,6 +91,8 @@ export interface SimulationReady {
   unsimulatedMoveCount: number
   /** Tools whose shape is not valid, with the reason; their moves are not simulated. */
   toolProblems: { number: number; problem: string }[]
+  /** Findings from the moves and the G-code (not from the comparison). */
+  findings: Finding[]
 }
 
 export type SimulationResponse =

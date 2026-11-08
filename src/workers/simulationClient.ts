@@ -6,13 +6,14 @@ import type { PartPlacement } from '../engine/partPlacement'
 import type { MoveList } from '../engine/moveList'
 import type { TriangleMesh } from '../engine/stepModel'
 import type { Box3D } from '../engine/stock'
-import type { CutterShape } from '../engine/toolShape'
+import type { ToolChange } from '../engine/gcodeParser'
 import type {
   ComparisonResult,
   SimulationFrame,
   SimulationReady,
   SimulationRequest,
   SimulationResponse,
+  WorkerTool,
 } from './simulationMessages'
 
 export interface SimulationHandlers {
@@ -34,7 +35,8 @@ export class SimulationClient {
     moves: MoveList,
     stock: Box3D,
     cellSize: number,
-    tools: { number: number; shape: CutterShape }[],
+    tools: WorkerTool[],
+    toolChanges: ToolChange[],
     handlers: SimulationHandlers,
   ): void {
     this.stop()
@@ -63,20 +65,24 @@ export class SimulationClient {
       stock,
       cellSize,
       tools,
+      toolChanges,
       moves: {
         count: moves.count,
         start: moves.start.slice(),
         end: moves.end.slice(),
+        type: moves.type.slice(),
+        feed: moves.feed.slice(),
+        spindle: moves.spindle.slice(),
         tool: moves.tool.slice(),
         toolpath: moves.toolpath.slice(),
+        line: moves.line.slice(),
       },
     }
-    worker.postMessage(request, [
-      request.moves.start.buffer,
-      request.moves.end.buffer,
-      request.moves.tool.buffer,
-      request.moves.toolpath.buffer,
-    ] as ArrayBuffer[])
+    const m = request.moves
+    worker.postMessage(
+      request,
+      [m.start, m.end, m.type, m.feed, m.spindle, m.tool, m.toolpath, m.line].map((a) => a.buffer) as ArrayBuffer[],
+    )
   }
 
   seek(moveIndex: number): void {

@@ -4,6 +4,9 @@
 // summary of each shown frame, and the auto-orient ranking against the final stock.
 import { autoOrient as rankPlacements } from '../engine/autoOrient'
 import { DeviationTracker, toleranceLimits } from '../engine/deviation'
+import { spoilboardFindings, toolChangeFindings } from '../engine/findings/jobFindings'
+import { moveFindings, type FindingMoves } from '../engine/findings/moveFindings'
+import { stockFindings } from '../engine/findings/stockFindings'
 import { mergePartGrids, rasterizePart } from '../engine/modelGrid'
 import { MaterialSimulation, planCheckpoints } from '../engine/simulation'
 import { cutterProfile, type CutterProfile } from '../engine/toolShape'
@@ -12,6 +15,9 @@ import type { SimulationRequest, SimulationResponse } from './simulationMessages
 let sim: MaterialSimulation | null = null
 /** Grid after the last move, for auto-orient. */
 let finalHeights: Float32Array | null = null
+let moves: FindingMoves | null = null
+/** Tool numbers of the thread mills in the tool table. */
+let threadMills = new Set<number>()
 /** Deviation of the shown stock from the placed parts, updated from each frame's changed cells. */
 let comparison: DeviationTracker | null = null
 let pendingSeek: number | null = null
@@ -35,7 +41,7 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
   const tools = new Map<number, CutterProfile>()
   const toolProblems: { number: number; problem: string }[] = []
   for (const t of req.tools) {
-    const p = cutterProfile(t.shape)
+    const p = cutterProfile(t)
     if (typeof p === 'string') toolProblems.push({ number: t.number, problem: p })
     else tools.set(t.number, p)
   }
@@ -43,7 +49,14 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
   const total = req.moves.count
   s.advanceTo(total, (done) => post({ type: 'progress', done, total }), 5000)
   sim = s
+  moves = req.moves
+  threadMills = new Set(req.tools.filter((t) => t.kind === 'thread mill').map((t) => t.number))
   finalHeights = s.grid.heights.slice()
+  const findings = [
+    ...moveFindings(req.moves, s, req.tools),
+    ...spoilboardFindings(req.moves, req.stock.min.z),
+    ...toolChangeFindings(req.moves, req.toolChanges, req.tools),
+  ]
   comparison = null
   pendingCompare = null
   s.takeDisplayDirty()
@@ -72,6 +85,7 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
       maxCutDepth,
       unsimulatedMoveCount: unsimulated,
       toolProblems,
+      findings,
     },
     [heights.buffer as ArrayBuffer, removedVolume.buffer as ArrayBuffer, maxCutDepth.buffer as ArrayBuffer],
   )
@@ -123,7 +137,7 @@ function runCompare() {
     const g = sim.grid
     if (req.parts.length === 0) {
       comparison = null
-      post({ type: 'comparison', requestId: req.requestId, limits: null, deviation: null, rasterizeMs: 0, limitsMs: 0 })
+      post({ type: 'comparison', requestId: req.requestId, limits: null, deviation: null, findings: [], rasterizeMs: 0, limitsMs: 0 })
       return
     }
     const t0 = performance.now()
@@ -135,6 +149,17 @@ function runCompare() {
     const limits = toleranceLimits(g, model, req.tolerances, g.bottom)
     const t2 = performance.now()
     comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights)
+    // Findings are on the final stock, whatever move playback shows.
+    const findings = stockFindings({
+      grid: g,
+      heights: finalHeights!,
+      model,
+      limits,
+      lastCut: sim.lastCut,
+      moveTool: moves!.tool,
+      moveLine: moves!.line,
+      threadMills,
+    })
     const interleaved = new Float32Array(g.nx * g.ny * 2)
     for (let c = 0; c < g.nx * g.ny; c++) {
       interleaved[c * 2] = limits.gougeBelow[c]
@@ -146,6 +171,7 @@ function runCompare() {
         requestId: req.requestId,
         limits: interleaved,
         deviation: comparison.summary(),
+        findings,
         rasterizeMs: t1 - t0,
         limitsMs: t2 - t1,
       },
