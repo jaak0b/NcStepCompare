@@ -4,7 +4,15 @@ import { CUTTER_SHAPE_KINDS, type CutterShapeKind } from '../engine/toolShape'
 import type { ToolEdits } from '../engine/toolTable'
 
 const STORAGE_KEY = 'ncstepcompare.toolEdits.v1'
-const NUMBER_FIELDS = ['diameter', 'cornerRadius', 'tipAngle', 'fluteLength', 'shoulderLength'] as const
+const NUMBER_FIELDS = [
+  'diameter',
+  'cornerRadius',
+  'tipAngle',
+  'fluteLength',
+  'shoulderLength',
+  'widthOfCutLimit',
+  'depthOfCutLimit',
+] as const
 type NumberField = (typeof NUMBER_FIELDS)[number]
 
 export type SavedToolEdits = Record<string, ToolEdits>

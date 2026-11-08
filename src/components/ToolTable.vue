@@ -26,6 +26,8 @@ const NUMBER_FIELDS: { field: NumberField; label: string; applies: (t: ToolSetup
   { field: 'shoulderLength', label: 'Shoulder length (mm)', applies: () => true },
   { field: 'cornerRadius', label: 'Corner radius (mm)', applies: (t) => t.kind === 'flat end mill' },
   { field: 'tipAngle', label: 'Tip angle (deg)', applies: (t) => t.kind === 'drill' || t.kind === 'V-bit' },
+  { field: 'widthOfCutLimit', label: 'Width of cut limit (mm)', applies: () => true },
+  { field: 'depthOfCutLimit', label: 'Depth of cut limit (mm)', applies: () => true },
 ]
 
 const shown = (v: number) => (Number.isFinite(v) ? String(v) : '')
@@ -52,6 +54,10 @@ function onValue(number: number, field: NumberField, event: Event) {
   <section>
     <h2>Tool table</h2>
     <p class="note">Edits restart the simulation.</p>
+    <p class="note">
+      Width and depth of cut limits default to 50 % and 100 % of the diameter. Set them to the values you
+      intend for each tool.
+    </p>
     <p v-if="tools.length === 0" class="note">The program loads no tools (no M6).</p>
     <div v-for="t in tools" :key="t.number" class="tool">
       <div class="title">
