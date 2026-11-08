@@ -95,3 +95,42 @@ describe('material removal on the height grid', () => {
     expect(heightAt(sim.grid, 10, 5)).toBeCloseTo(-1, 6)
   })
 })
+
+describe('material removal: review fixes', () => {
+  const flat3175: CutterShape = { kind: 'flat end mill', diameter: 3.175, cornerRadius: 0, tipAngle: 0 }
+
+  it('removes nothing when a pass repeats at the same depth', () => {
+    const sim = simulate('T1 M6\nG0 X5 Y5 Z5\nG1 Z-0.7 F100\nG1 X15\nG1 X5', flat3175)
+
+    expect(sim.removedVolume[2]).toBe(0)
+  })
+
+  // Distance from a cell centre to the line Y = X is |x - y| / sqrt(2).
+  it('cuts a diagonal slot exactly to the tool radius', () => {
+    const sim = simulate('T1 M6\nG0 X2.025 Y2.025 Z5\nG1 Z-1 F100\nG1 X8.025 Y8.025', flat3175)
+
+    expect(heightAt(sim.grid, 5.03, 7.23)).toBeCloseTo(-1, 6) // 2.2 / sqrt(2) = 1.556 mm off the line
+    expect(heightAt(sim.grid, 5.03, 7.33)).toBe(0) // 2.3 / sqrt(2) = 1.626 mm off the line
+  })
+
+  // Stock 10.02 mm long: the last 0.05 mm cell column overhangs the stock by 0.03 mm. A 100 mm flat
+  // end mill plunging 1 mm removes the whole top: 10.02 x 10 x 1 = 100.2 mm^3.
+  it('counts removed volume only inside the stock when the last cell overhangs its edge', () => {
+    const job = parseGcode('T1 M6\nG0 X5 Y5 Z5\nG1 Z-1 F100')
+    const narrowStock = { min: { x: 0, y: 0, z: -5 }, max: { x: 10.02, y: 10, z: 0 } }
+    const sim = new MaterialSimulation(narrowStock, 0.05, job.moves, new Map([[1, profile({ kind: 'flat end mill', diameter: 100, cornerRadius: 0, tipAngle: 0 })]]), [])
+
+    sim.advanceTo(job.moves.count)
+
+    expect(sim.removedVolume[0]).toBeCloseTo(100.2, 3)
+  })
+
+  it('counts a move without a tool as not simulated only when it reaches into the stock', () => {
+    const job = parseGcode('G0 X1 Y1 Z5\nG0 X2 Y2 Z5\nG1 Z-1 F100')
+    const sim = new MaterialSimulation(stock, 0.05, job.moves, new Map(), [])
+
+    sim.advanceTo(job.moves.count)
+
+    expect(Array.from(sim.unsimulatedMoves)).toEqual([0, 1])
+  })
+})

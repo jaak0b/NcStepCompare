@@ -1,7 +1,7 @@
 // Tool table for the simulation: one entry per tool number, prefilled from the Makera header and
 // editable by the user. Each value records where it came from.
 import type { ToolDefinition, ToolKind } from './makeraHeader'
-import type { CutterShape, CutterShapeKind } from './toolShape'
+import { cutterProfile, type CutterShape, type CutterShapeKind } from './toolShape'
 
 export type ValueSource = 'header' | 'user' | 'assumed' | 'missing'
 
@@ -12,6 +12,9 @@ export interface ToolSetup extends CutterShape {
   name: string
   fluteLength: number
   shoulderLength: number
+  /** Header-only values, shown for reference; null when the tool is not in the header. */
+  shankDiameter: number | null
+  studioType: string | null
   sources: Record<ToolField, ValueSource>
 }
 
@@ -47,6 +50,8 @@ function fromHeader(t: ToolDefinition): ToolSetup {
     tipAngle,
     fluteLength: t.fluteLength,
     shoulderLength: t.shoulderLength,
+    shankDiameter: t.shankDiameter,
+    studioType: t.studioType,
     sources: {
       kind: kind ? 'header' : 'assumed',
       diameter: 'header',
@@ -63,11 +68,13 @@ function blank(number: number): ToolSetup {
     number,
     name: '',
     kind: 'flat end mill',
-    diameter: 0,
+    diameter: NaN,
     cornerRadius: 0,
     tipAngle: 0,
-    fluteLength: 0,
-    shoulderLength: 0,
+    fluteLength: NaN,
+    shoulderLength: NaN,
+    shankDiameter: null,
+    studioType: null,
     sources: {
       kind: 'assumed',
       diameter: 'missing',
@@ -86,4 +93,38 @@ export function buildToolTable(headerTools: ToolDefinition[], toolNumbersUsed: n
     if (n >= 0 && !table.some((t) => t.number === n)) table.push(blank(n))
   }
   return table.sort((a, b) => a.number - b.number)
+}
+
+/** Default included tip angle for a cutter type, or null when the type has no tip angle. */
+export function defaultTipAngle(kind: CutterShapeKind): number | null {
+  if (kind === 'drill') return DEFAULT_DRILL_TIP_ANGLE
+  if (kind === 'V-bit') return DEFAULT_V_BIT_TIP_ANGLE
+  return null
+}
+
+/** Changes the cutter type. A drill or V-bit gets its default tip angle unless the user set one. */
+export function withToolKind(t: ToolSetup, kind: CutterShapeKind): ToolSetup {
+  const next: ToolSetup = { ...t, kind, sources: { ...t.sources, kind: 'user' } }
+  const angle = defaultTipAngle(kind)
+  if (angle !== null && !(t.sources.tipAngle === 'user' && t.tipAngle > 0)) {
+    next.tipAngle = angle
+    next.sources.tipAngle = 'assumed'
+  }
+  return next
+}
+
+/** Sets a numeric field from user input. An empty or unreadable entry leaves the value missing. */
+export function withToolValue(t: ToolSetup, field: Exclude<ToolField, 'kind'>, value: number): ToolSetup {
+  const ok = Number.isFinite(value)
+  return { ...t, [field]: ok ? value : NaN, sources: { ...t.sources, [field]: ok ? 'user' : 'missing' } }
+}
+
+/** Every reason the tool entry is not usable as entered; empty when it is fine. */
+export function toolProblems(t: ToolSetup): string[] {
+  const problems: string[] = []
+  const shape = cutterProfile(t)
+  if (typeof shape === 'string') problems.push(`${shape} Moves with this tool are not simulated.`)
+  if (!(t.fluteLength > 0)) problems.push('Enter a flute length above 0 mm.')
+  if (!(t.shoulderLength > 0)) problems.push('Enter a shoulder length above 0 mm.')
+  return problems
 }

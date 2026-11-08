@@ -9,9 +9,12 @@
 //  - flat-bottomed cutter: f is linear in t, the minimum is at an interval end (closed form);
 //  - otherwise (ramps and plunges of ball, bull nose and cone profiles): golden-section search,
 //    which converges to the minimum of a convex function; 40 iterations narrow t to 1e-8 of the move.
-// Only cells in the move's XY bounding box grown by the tool radius are visited.
+//    Before searching, the exact lower bound (lowest Z on the interval plus the profile at the
+//    closest distance) skips cells that are already deeper.
+// Only the swept band is visited: per cell row, the X interval where the row crosses the capsule
+// of points within the tool radius of the segment (two end discs and the two offset edges).
 import type { HeightGrid } from './heightGrid'
-import { ProfileForm, type CutterProfile } from './toolShape'
+import { ProfileForm, profileHeight, type CutterProfile } from './toolShape'
 
 const GOLDEN_SECTION_ITERATIONS = 40
 const INV_PHI = (Math.sqrt(5) - 1) / 2
@@ -26,25 +29,6 @@ export interface MoveRemoval {
   maxI: number
   minJ: number
   maxJ: number
-}
-
-function profileAt(p: CutterProfile, r: number): number {
-  switch (p.form) {
-    case ProfileForm.Flat:
-      return 0
-    case ProfileForm.Ball: {
-      const s = p.radius * p.radius - r * r
-      return p.radius - (s > 0 ? Math.sqrt(s) : 0)
-    }
-    case ProfileForm.BullNose: {
-      const u = r - (p.radius - p.cornerRadius)
-      if (u <= 0) return 0
-      const s = p.cornerRadius * p.cornerRadius - u * u
-      return p.cornerRadius - (s > 0 ? Math.sqrt(s) : 0)
-    }
-    default:
-      return r * p.coneSlope
-  }
 }
 
 export function sweepMove(
@@ -67,8 +51,10 @@ export function sweepMove(
 
   const R = tool.radius
   const cs = grid.cellSize
-  const i0 = Math.max(0, Math.floor((Math.min(x0, x1) - R - grid.originX) / cs))
-  const i1 = Math.min(grid.nx - 1, Math.floor((Math.max(x0, x1) + R - grid.originX) / cs))
+  const nx = grid.nx
+  const ox = grid.originX
+  const i0 = Math.max(0, Math.floor((Math.min(x0, x1) - R - ox) / cs))
+  const i1 = Math.min(nx - 1, Math.floor((Math.max(x0, x1) + R - ox) / cs))
   const j0 = Math.max(0, Math.floor((Math.min(y0, y1) - R - grid.originY) / cs))
   const j1 = Math.min(grid.ny - 1, Math.floor((Math.max(y0, y1) + R - grid.originY) / cs))
   if (i0 > i1 || j0 > j1) return out
@@ -78,27 +64,65 @@ export function sweepMove(
   const dz = z1 - z0
   const a = dx * dx + dy * dy
   const R2 = R * R
+  const len = Math.sqrt(a)
+  // Unit normal of the segment in XY, for the capsule's offset edges.
+  const nxu = len > 0 ? -dy / len : 0
+  const nyu = len > 0 ? dx / len : 0
   const flatBottom = tool.form === ProfileForm.Flat
   const horizontal = dz === 0
   const bottom = grid.bottom
   const h = grid.heights
-  const nx = grid.nx
-  let volumeHeight = 0
+  const lastI = nx - 1
+  const lastJ = grid.ny - 1
+  let volume = 0
 
   for (let j = j0; j <= j1; j++) {
     const cy = grid.originY + (j + 0.5) * cs
     const wy = cy - y0
+
+    // X extent of the capsule on this row.
+    let lo = Infinity
+    let hi = -Infinity
+    const r0 = R2 - wy * wy
+    if (r0 >= 0) {
+      const s = Math.sqrt(r0)
+      if (x0 - s < lo) lo = x0 - s
+      if (x0 + s > hi) hi = x0 + s
+    }
+    const wy1 = cy - y1
+    const r1 = R2 - wy1 * wy1
+    if (r1 >= 0) {
+      const s = Math.sqrt(r1)
+      if (x1 - s < lo) lo = x1 - s
+      if (x1 + s > hi) hi = x1 + s
+    }
+    if (dy !== 0) {
+      for (let side = -1; side <= 1; side += 2) {
+        const t = (wy - side * R * nyu) / dy
+        if (t >= 0 && t <= 1) {
+          const x = x0 + t * dx + side * R * nxu
+          if (x < lo) lo = x
+          if (x > hi) hi = x
+        }
+      }
+    }
+    if (lo > hi) continue
+    const ia = Math.max(i0, Math.ceil((lo - ox) / cs - 0.5 - 1e-9))
+    const ib = Math.min(i1, Math.floor((hi - ox) / cs - 0.5 + 1e-9))
+
     const row = j * nx
-    for (let i = i0; i <= i1; i++) {
-      const cx = grid.originX + (i + 0.5) * cs
+    const cellH = j === lastJ ? grid.lastRowHeight : cs
+    for (let i = ia; i <= ib; i++) {
+      const cx = ox + (i + 0.5) * cs
       const wx = cx - x0
       const w2 = wx * wx + wy * wy
+      const old = h[row + i]
       let zmin: number
 
       if (a === 0) {
         // Vertical move: the tool axis stays put.
         if (w2 > R2) continue
-        zmin = (dz < 0 ? z1 : z0) + profileAt(tool, Math.sqrt(w2))
+        zmin = (dz < 0 ? z1 : z0) + profileHeight(tool, Math.sqrt(w2))
       } else {
         const b = wx * dx + wy * dy
         const disc = b * b - a * (w2 - R2)
@@ -115,48 +139,54 @@ export function sweepMove(
           else if (t > 1) t = 1
           const ex = wx - t * dx
           const ey = wy - t * dy
-          zmin = z0 + profileAt(tool, Math.sqrt(ex * ex + ey * ey))
+          zmin = z0 + profileHeight(tool, Math.sqrt(ex * ex + ey * ey))
         } else if (flatBottom) {
           zmin = z0 + (dz < 0 ? tb : ta) * dz
         } else {
+          let tc = b / a
+          if (tc < ta) tc = ta
+          else if (tc > tb) tc = tb
+          const lowerBound = z0 + (dz < 0 ? tb : ta) * dz + profileHeight(tool, Math.hypot(wx - tc * dx, wy - tc * dy))
+          if (Math.fround(lowerBound) >= old) continue
           // Golden-section search for the minimum of the convex f on [ta, tb].
-          let lo = ta
-          let hi = tb
-          let m1 = hi - INV_PHI * (hi - lo)
-          let m2 = lo + INV_PHI * (hi - lo)
-          let f1 = z0 + m1 * dz + profileAt(tool, Math.hypot(wx - m1 * dx, wy - m1 * dy))
-          let f2 = z0 + m2 * dz + profileAt(tool, Math.hypot(wx - m2 * dx, wy - m2 * dy))
+          let lo2 = ta
+          let hi2 = tb
+          let m1 = hi2 - INV_PHI * (hi2 - lo2)
+          let m2 = lo2 + INV_PHI * (hi2 - lo2)
+          let f1 = z0 + m1 * dz + profileHeight(tool, Math.hypot(wx - m1 * dx, wy - m1 * dy))
+          let f2 = z0 + m2 * dz + profileHeight(tool, Math.hypot(wx - m2 * dx, wy - m2 * dy))
           for (let k = 0; k < GOLDEN_SECTION_ITERATIONS; k++) {
             if (f1 <= f2) {
-              hi = m2
+              hi2 = m2
               m2 = m1
               f2 = f1
-              m1 = hi - INV_PHI * (hi - lo)
-              f1 = z0 + m1 * dz + profileAt(tool, Math.hypot(wx - m1 * dx, wy - m1 * dy))
+              m1 = hi2 - INV_PHI * (hi2 - lo2)
+              f1 = z0 + m1 * dz + profileHeight(tool, Math.hypot(wx - m1 * dx, wy - m1 * dy))
             } else {
-              lo = m1
+              lo2 = m1
               m1 = m2
               f1 = f2
-              m2 = lo + INV_PHI * (hi - lo)
-              f2 = z0 + m2 * dz + profileAt(tool, Math.hypot(wx - m2 * dx, wy - m2 * dy))
+              m2 = lo2 + INV_PHI * (hi2 - lo2)
+              f2 = z0 + m2 * dz + profileHeight(tool, Math.hypot(wx - m2 * dx, wy - m2 * dy))
             }
           }
           zmin = f1 < f2 ? f1 : f2
           // The interval ends are candidates too (a convex f can be monotone on the interval).
-          const fa = z0 + ta * dz + profileAt(tool, Math.hypot(wx - ta * dx, wy - ta * dy))
-          const fb = z0 + tb * dz + profileAt(tool, Math.hypot(wx - tb * dx, wy - tb * dy))
+          const fa = z0 + ta * dz + profileHeight(tool, Math.hypot(wx - ta * dx, wy - ta * dy))
+          const fb = z0 + tb * dz + profileHeight(tool, Math.hypot(wx - tb * dx, wy - tb * dy))
           if (fa < zmin) zmin = fa
           if (fb < zmin) zmin = fb
         }
       }
 
-      const old = h[row + i]
-      if (zmin < old) {
-        h[row + i] = zmin
+      // Compare in the grid's float32 precision, so a repeated pass at the same depth removes nothing.
+      const z = Math.fround(zmin)
+      if (z < old) {
+        h[row + i] = z
         // Removed stock material is the part of [new, old] above the stock bottom.
-        const removed = (old > bottom ? old : bottom) - (zmin > bottom ? zmin : bottom)
+        const removed = (old > bottom ? old : bottom) - (z > bottom ? z : bottom)
         if (removed > 0) {
-          volumeHeight += removed
+          volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
         }
         if (i < out.minI) out.minI = i
@@ -166,7 +196,7 @@ export function sweepMove(
       }
     }
   }
-  out.removedVolume = volumeHeight * cs * cs
+  out.removedVolume = volume
   return out
 }
 

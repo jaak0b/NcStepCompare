@@ -30,11 +30,11 @@ export interface CutterProfile {
 /** Returns the profile, or an error message when the shape's values cannot describe a cutter. */
 export function cutterProfile(shape: CutterShape): CutterProfile | string {
   const radius = shape.diameter / 2
-  if (!(radius > 0) || !Number.isFinite(radius)) return 'Diameter must be above 0 mm.'
+  if (!(radius > 0) || !Number.isFinite(radius)) return 'Enter a diameter above 0 mm.'
   switch (shape.kind) {
     case 'flat end mill': {
       const rc = shape.cornerRadius
-      if (!(rc >= 0) || rc > radius) return 'Corner radius must be between 0 mm and half the diameter.'
+      if (!(rc >= 0) || rc > radius) return 'Enter a corner radius between 0 mm and half the diameter.'
       if (rc === 0) return { form: ProfileForm.Flat, radius, cornerRadius: 0, coneSlope: 0 }
       if (rc === radius) return { form: ProfileForm.Ball, radius, cornerRadius: radius, coneSlope: 0 }
       return { form: ProfileForm.BullNose, radius, cornerRadius: rc, coneSlope: 0 }
@@ -47,13 +47,16 @@ export function cutterProfile(shape: CutterShape): CutterProfile | string {
     case 'drill':
     case 'V-bit': {
       const a = shape.tipAngle
-      if (!(a > 0 && a < 180)) return 'Tip angle must be between 0 and 180 degrees.'
+      if (!(a > 0 && a < 180)) return 'Enter a tip angle between 0 and 180 degrees.'
       return { form: ProfileForm.Cone, radius, cornerRadius: 0, coneSlope: 1 / Math.tan((a * Math.PI) / 360) }
     }
   }
 }
 
-/** Height of the cutting surface above the tip at radial distance r (0 <= r <= radius). */
+/**
+ * Height of the cutting surface above the tip at radial distance r (0 <= r <= radius). This is the
+ * one implementation of the profile; the sweep calls it in its inner loop.
+ */
 export function profileHeight(p: CutterProfile, r: number): number {
   switch (p.form) {
     case ProfileForm.Flat:

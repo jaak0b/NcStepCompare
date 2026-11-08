@@ -34,13 +34,36 @@ export function planCheckpoints(moves: SimulationMoves, interval = DEFAULT_CHECK
   return [...set].sort((a, b) => a - b)
 }
 
+/** Inclusive cell range; empty when minI > maxI. */
+export interface CellRect {
+  minI: number
+  maxI: number
+  minJ: number
+  maxJ: number
+}
+
+function emptyRect(): CellRect {
+  return { minI: Number.MAX_SAFE_INTEGER, maxI: -1, minJ: Number.MAX_SAFE_INTEGER, maxJ: -1 }
+}
+
+function extend(r: CellRect, o: CellRect): void {
+  if (o.minI > o.maxI || o.minJ > o.maxJ) return
+  if (o.minI < r.minI) r.minI = o.minI
+  if (o.maxI > r.maxI) r.maxI = o.maxI
+  if (o.minJ < r.minJ) r.minJ = o.minJ
+  if (o.maxJ > r.maxJ) r.maxJ = o.maxJ
+}
+
 export class MaterialSimulation {
   readonly grid: HeightGrid
   /** Per move: stock volume removed (mm^3), filled on the first pass through each move. */
   readonly removedVolume: Float32Array
   /** Per move: largest thickness of stock removed in one cell (mm). */
   readonly maxCutDepth: Float32Array
-  /** Moves not simulated because their tool has no valid shape (or no tool was loaded). */
+  /**
+   * 1 for moves that reach below the stock top but were not simulated because their tool has no
+   * valid shape (or no tool was loaded).
+   */
   readonly unsimulatedMoves: Int32Array
   /** Number of moves applied to the grid; the grid shows the state after moves [0, current). */
   current = 0
@@ -54,6 +77,10 @@ export class MaterialSimulation {
   private dirtyMinJ: number
   private dirtyMaxJ = -1
   private readonly removal = emptyMoveRemoval()
+  /** Every cell ever changed lies in this rectangle; all others are still at the stock top. */
+  private readonly everDirty = emptyRect()
+  /** Cells that may have changed since the display last took a copy. */
+  private displayDirty = emptyRect()
 
   constructor(
     stock: Box3D,
@@ -81,10 +108,14 @@ export class MaterialSimulation {
       const i = this.current
       const profile = this.tools.get(m.tool[i])
       const k = i * 3
-      if (!profile) {
+      if (Math.min(m.start[k + 2], m.end[k + 2]) >= g.top) {
+        // Entirely above the stock: removes nothing, whatever the tool.
+      } else if (!profile) {
         if (i >= this.statsUpTo) this.unsimulatedMoves[i] = 1
-      } else if (Math.min(m.start[k + 2], m.end[k + 2]) < g.top) {
+      } else {
         sweepMove(g, m.start[k], m.start[k + 1], m.start[k + 2], m.end[k], m.end[k + 1], m.end[k + 2], profile, r)
+        extend(this.everDirty, r)
+        extend(this.displayDirty, r)
         if (i >= this.statsUpTo) {
           this.removedVolume[i] = r.removedVolume
           this.maxCutDepth[i] = r.maxCutDepth
@@ -108,6 +139,17 @@ export class MaterialSimulation {
     const jumpAhead = this.checkpoints.some((c) => c.moveIndex > this.current && c.moveIndex <= t)
     if (t < this.current || jumpAhead) this.restore(t)
     this.advanceTo(t)
+  }
+
+  /** Rectangle of cells that may have changed since the last call, then starts a new one. */
+  takeDisplayDirty(): CellRect {
+    const r = this.displayDirty
+    this.displayDirty = emptyRect()
+    if (r.maxI >= 0) {
+      r.maxI = Math.min(r.maxI, this.grid.nx - 1)
+      r.maxJ = Math.min(r.maxJ, this.grid.ny - 1)
+    }
+    return r
   }
 
   /** Memory held by checkpoints, in bytes. */
@@ -154,7 +196,10 @@ export class MaterialSimulation {
 
   private restore(target: number): void {
     const g = this.grid
-    g.heights.fill(g.top)
+    // Only cells inside everDirty can differ from the stock top.
+    const e = this.everDirty
+    for (let j = e.minJ; j <= e.maxJ; j++) g.heights.fill(g.top, j * g.nx + e.minI, j * g.nx + e.maxI + 1)
+    extend(this.displayDirty, e)
     this.current = 0
     for (const c of this.checkpoints) {
       if (c.moveIndex > target) break
