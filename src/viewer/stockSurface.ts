@@ -9,6 +9,13 @@
 // flat-shaded from screen-space derivatives. Where the material is cut down to the stock bottom or
 // below, the surface is discarded, so through-cuts show as openings.
 //
+// The stock is drawn as a closed solid: the same tile drawn at the stock bottom Z forms the bottom
+// face, with the same openings (the discard rule uses the same interpolated heights, so its edge
+// meets the top surface exactly). The bottom face shows its downward side only. The top surface stays
+// two-sided so the walls of through-cuts show from any angle; seen from below, the bottom face hides
+// it by the depth test. Where the cut reaches the stock bottom the two are coplanar, so the bottom
+// face carries a polygon offset (depth only, the drawn heights are unchanged) and wins that tie.
+//
 // Playback uploads only the changed rectangle of cells into the texture.
 import * as THREE from 'three'
 import type { CellRect } from '../engine/simulation'
@@ -46,7 +53,12 @@ void main() {
   ivec2 v = min(ivec2(position.xy + aTile), uGridSize + 1);
   float h = vertexHeight(v);
   vHeight = h;
-  vec4 world = modelMatrix * vec4(vertexXY(v), h, 1.0);
+#ifdef BOTTOM_FACE
+  float z = uBottom;
+#else
+  float z = h;
+#endif
+  vec4 world = modelMatrix * vec4(vertexXY(v), z, 1.0);
   vWorld = world.xyz;
   gl_Position = projectionMatrix * viewMatrix * world;
 }
@@ -93,6 +105,7 @@ export class StockSurface {
   private readonly texture: THREE.DataTexture
   private readonly surface: THREE.Mesh
   private readonly skirt: THREE.Mesh
+  private readonly bottomFace: THREE.Mesh
   private readonly uniforms: Record<string, THREE.IUniform>
 
   constructor(
@@ -118,12 +131,17 @@ export class StockSurface {
       uColor: { value: STOCK_COLOR },
     }
 
-    this.surface = new THREE.Mesh(this.surfaceGeometry(), this.material(SURFACE_VERTEX, false))
-    this.skirt = new THREE.Mesh(this.skirtGeometry(), this.material(SKIRT_VERTEX, true))
+    this.surface = new THREE.Mesh(this.surfaceGeometry(), this.material(SURFACE_VERTEX, {}, THREE.DoubleSide))
+    // Tile triangles wind counter-clockwise seen from +Z, so the back side of the bottom face faces down.
+    const bottomMaterial = this.material(SURFACE_VERTEX, { BOTTOM_FACE: 1 }, THREE.BackSide)
+    bottomMaterial.polygonOffset = true
+    bottomMaterial.polygonOffsetFactor = -1
+    bottomMaterial.polygonOffsetUnits = -1
+    this.bottomFace = new THREE.Mesh(this.surface.geometry, bottomMaterial)
+    this.skirt = new THREE.Mesh(this.skirtGeometry(), this.material(SKIRT_VERTEX, { SKIRT: 1 }, THREE.DoubleSide))
     // Positions come from the texture, so the geometry has no meaningful bounds to cull with.
-    this.surface.frustumCulled = false
-    this.skirt.frustumCulled = false
-    parent.add(this.surface, this.skirt)
+    for (const m of [this.surface, this.bottomFace, this.skirt]) m.frustumCulled = false
+    parent.add(this.surface, this.bottomFace, this.skirt)
     renderer.initTexture(this.texture)
   }
 
@@ -144,22 +162,22 @@ export class StockSurface {
   }
 
   dispose(): void {
-    this.parent.remove(this.surface, this.skirt)
-    for (const mesh of [this.surface, this.skirt]) {
+    this.parent.remove(this.surface, this.bottomFace, this.skirt)
+    for (const mesh of [this.surface, this.bottomFace, this.skirt]) {
       mesh.geometry.dispose()
       ;(mesh.material as THREE.Material).dispose()
     }
     this.texture.dispose()
   }
 
-  private material(vertexShader: string, skirt: boolean): THREE.ShaderMaterial {
+  private material(vertexShader: string, defines: Record<string, number>, side: THREE.Side): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader,
       fragmentShader: FRAGMENT,
       uniforms: this.uniforms,
-      defines: skirt ? { SKIRT: 1 } : {},
-      side: THREE.DoubleSide,
+      defines,
+      side,
     })
   }
 
