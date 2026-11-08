@@ -120,34 +120,6 @@ function toolpathName(number: number, name: string): string {
       </dl>
     </section>
 
-    <section v-if="header.tools.length > 0">
-      <h2>Tools (from file header)</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th>Type</th>
-            <th>Diameter</th>
-            <th>Flute length</th>
-            <th>Shoulder length</th>
-            <th>Shank diameter</th>
-            <th>Name</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="tool in header.tools" :key="tool.number">
-            <td>T{{ tool.number }}</td>
-            <td>{{ tool.kind === 'unknown' ? tool.studioType : tool.kind }}</td>
-            <td>{{ mm(tool.diameter) }}</td>
-            <td>{{ mm(tool.fluteLength) }}</td>
-            <td>{{ mm(tool.shoulderLength) }}</td>
-            <td>{{ mm(tool.shankDiameter) }}</td>
-            <td>{{ tool.name }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
     <section>
       <h2>Toolpaths</h2>
       <div class="toggles">

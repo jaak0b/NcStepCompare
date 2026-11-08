@@ -1,22 +1,132 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
 import JobSummary from './components/JobSummary.vue'
+import PlaybackControls from './components/PlaybackControls.vue'
+import SimulationPanel from './components/SimulationPanel.vue'
+import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
-import { stockBoxInWorkCoordinates } from './engine/stock'
+import { DEFAULT_CELL_SIZE_MM } from './engine/heightGrid'
+import { NO_TOOLPATH } from './engine/moveList'
+import { simulationStock } from './engine/stock'
+import { buildToolTable, type ToolSetup } from './engine/toolTable'
 import { parseFileInWorker, type LoadedJob } from './workers/parseMessages'
+import { SimulationClient } from './workers/simulationClient'
+import type { ToolMarker } from './viewer/toolpathScene'
+import type { SimulationFrame, SimulationReady } from './workers/simulationMessages'
 
-// shallowRef: the move list holds large typed arrays that must not become reactive proxies.
+// shallowRef: the move list and grids hold large typed arrays that must not become reactive proxies.
 const loaded = shallowRef<LoadedJob | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const hiddenToolpaths = ref(new Set<number>())
 const rapidsVisible = ref(true)
 
-const stockBox = computed(() => {
-  const h = loaded.value?.job.header
-  if (!h?.stock || !h.workOrigin) return null
-  return stockBoxInWorkCoordinates(h.stock, h.workOrigin)
+const tools = shallowRef<ToolSetup[]>([])
+const cellSize = ref(DEFAULT_CELL_SIZE_MM)
+const cellSizeSource = ref<'assumed' | 'user'>('assumed')
+
+const simClient = new SimulationClient()
+const simStatus = ref<'idle' | 'running' | 'ready' | 'error'>('idle')
+const simProgress = ref(0)
+const simError = ref<string | null>(null)
+const simResult = shallowRef<SimulationReady | null>(null)
+const frame = shallowRef<SimulationFrame | null>(null)
+const playIndex = ref(0)
+
+onBeforeUnmount(() => simClient.stop())
+
+const stock = computed(() => {
+  const l = loaded.value
+  if (!l) return null
+  return simulationStock(l.job.header.stock, l.job.header.workOrigin, l.summary.bounds)
 })
+const stockBox = computed(() => stock.value?.box ?? null)
+
+const toolpathStarts = computed(() => {
+  const l = loaded.value
+  if (!l) return []
+  const m = l.job.moves
+  const firstMove = new Map<number, number>()
+  for (let i = 0; i < m.count; i++) {
+    if (!firstMove.has(m.toolpath[i])) firstMove.set(m.toolpath[i], i)
+  }
+  return l.summary.toolpaths
+    .filter((tp) => firstMove.has(tp.number))
+    .map((tp) => ({
+      number: tp.number,
+      name: tp.number === NO_TOOLPATH ? 'Moves outside any toolpath' : tp.name,
+      firstMove: firstMove.get(tp.number)!,
+    }))
+})
+
+const currentLine = computed(() => {
+  const m = loaded.value?.job.moves
+  return m && playIndex.value > 0 ? m.line[playIndex.value - 1] : null
+})
+
+const toolMarker = computed<ToolMarker | null>(() => {
+  const m = loaded.value?.job.moves
+  if (!m || m.count === 0 || simStatus.value !== 'ready') return null
+  const i = playIndex.value > 0 ? playIndex.value - 1 : 0
+  const arr = playIndex.value > 0 ? m.end : m.start
+  const tool = tools.value.find((t) => t.number === m.tool[i])
+  if (!tool) return null
+  return {
+    tip: { x: arr[i * 3], y: arr[i * 3 + 1], z: arr[i * 3 + 2] },
+    radius: tool.diameter / 2,
+    length: tool.fluteLength,
+  }
+})
+
+function startSimulation() {
+  const l = loaded.value
+  simResult.value = null
+  frame.value = null
+  simError.value = null
+  if (!l || !stock.value) {
+    simClient.stop()
+    simStatus.value = 'idle'
+    return
+  }
+  simStatus.value = 'running'
+  simProgress.value = 0
+  // Plain copies: Vue proxies cannot be sent to a worker.
+  const toolShapes = tools.value.map((t) => ({
+    number: t.number,
+    shape: { kind: t.kind, diameter: t.diameter, cornerRadius: t.cornerRadius, tipAngle: t.tipAngle },
+  }))
+  const box = stock.value.box
+  simClient.start(
+    l.job.moves,
+    { min: { ...box.min }, max: { ...box.max } },
+    cellSize.value,
+    toolShapes,
+    {
+      onProgress: (done, total) => {
+        simProgress.value = total > 0 ? done / total : 1
+      },
+      onReady: (r) => {
+        simResult.value = r
+        frame.value = r.frame
+        playIndex.value = r.frame.moveIndex
+        simStatus.value = 'ready'
+      },
+      onFrame: (f) => {
+        frame.value = f
+      },
+      onError: (message) => {
+        simError.value = message
+        simStatus.value = 'error'
+      },
+    },
+  )
+}
+
+function seek(index: number) {
+  if (simStatus.value !== 'ready') return
+  playIndex.value = index
+  simClient.seek(index)
+}
 
 async function onFileChosen(event: Event) {
   const input = event.target as HTMLInputElement
@@ -24,16 +134,31 @@ async function onFileChosen(event: Event) {
   if (!file) return
   loading.value = true
   error.value = null
+  simClient.stop()
   try {
     const result = await parseFileInWorker(file)
     hiddenToolpaths.value = new Set()
     loaded.value = result
+    const used = [...new Set(result.summary.toolpaths.flatMap((t) => t.toolsUsed))]
+    tools.value = buildToolTable(result.job.header.tools, used)
+    startSimulation()
   } catch (err) {
     error.value = `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
     input.value = ''
   }
+}
+
+function onToolsEdited(next: ToolSetup[]) {
+  tools.value = next
+  startSimulation()
+}
+
+function onCellSize(value: number) {
+  cellSize.value = value
+  cellSizeSource.value = 'user'
+  startSimulation()
 }
 
 function toggleToolpath(number: number) {
@@ -62,23 +187,47 @@ function setAllToolpaths(visible: boolean) {
         <p v-if="loading" class="status">Reading and parsing the file.</p>
         <p v-if="error" class="error">{{ error }}</p>
       </header>
-      <JobSummary
-        v-if="loaded"
-        v-model:rapids-visible="rapidsVisible"
-        :loaded="loaded"
-        :stock-box="stockBox"
-        :hidden-toolpaths="hiddenToolpaths"
-        @toggle-toolpath="toggleToolpath"
-        @set-all-toolpaths="setAllToolpaths"
-      />
+      <template v-if="loaded">
+        <SimulationPanel
+          :status="simStatus"
+          :progress="simProgress"
+          :result="simResult"
+          :error="simError"
+          :stock-source="stock?.source ?? null"
+          :cell-size="cellSize"
+          :cell-size-source="cellSizeSource"
+          @update:cell-size="onCellSize"
+        />
+        <ToolTable :tools="tools" @update="onToolsEdited" />
+        <JobSummary
+          v-model:rapids-visible="rapidsVisible"
+          :loaded="loaded"
+          :stock-box="stock?.source === 'header' ? stockBox : null"
+          :hidden-toolpaths="hiddenToolpaths"
+          @toggle-toolpath="toggleToolpath"
+          @set-all-toolpaths="setAllToolpaths"
+        />
+      </template>
       <p v-else-if="!loading" class="status">Open a .nc file to view its toolpaths.</p>
     </aside>
     <main class="view">
-      <ToolpathViewer
-        :loaded="loaded"
-        :stock-box="stockBox"
-        :hidden-toolpaths="hiddenToolpaths"
-        :rapids-visible="rapidsVisible"
+      <div class="viewer-area">
+        <ToolpathViewer
+          :loaded="loaded"
+          :stock-box="stockBox"
+          :hidden-toolpaths="hiddenToolpaths"
+          :rapids-visible="rapidsVisible"
+          :frame="frame"
+          :tool-marker="toolMarker"
+        />
+      </div>
+      <PlaybackControls
+        v-if="loaded && simStatus === 'ready'"
+        :move-count="loaded.job.moves.count"
+        :index="playIndex"
+        :current-line="currentLine"
+        :toolpaths="toolpathStarts"
+        @seek="seek"
       />
     </main>
   </div>
@@ -95,6 +244,9 @@ function setAllToolpaths(visible: boolean) {
   padding: 12px;
   border-right: 1px solid #d6d9dd;
   background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 h1 {
   font-size: 18px;
@@ -114,13 +266,20 @@ h1 {
   color: #b42318;
 }
 .view {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+}
+.viewer-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 @media (max-width: 800px) {
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 60vh;
+    grid-template-rows: auto 70vh;
     height: auto;
   }
 }

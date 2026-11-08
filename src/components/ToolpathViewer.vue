@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Box3D } from '../engine/stock'
-import { ToolpathScene } from '../viewer/toolpathScene'
+import { ToolpathScene, type ToolMarker } from '../viewer/toolpathScene'
 import type { LoadedJob } from '../workers/parseMessages'
+import type { SimulationFrame } from '../workers/simulationMessages'
 
 const props = defineProps<{
   loaded: LoadedJob | null
   stockBox: Box3D | null
   hiddenToolpaths: Set<number>
   rapidsVisible: boolean
+  frame: SimulationFrame | null
+  toolMarker: ToolMarker | null
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -29,6 +32,13 @@ function showJob() {
   scene.setJob(props.loaded.job.moves, props.stockBox, props.loaded.summary.bounds)
   scene.setHiddenToolpaths(props.hiddenToolpaths)
   scene.setRapidsVisible(props.rapidsVisible)
+  scene.setHeightField(props.frame)
+  showMarker()
+}
+
+function showMarker() {
+  const m = props.toolMarker
+  scene?.setToolMarker(m?.tip ?? null, m?.radius ?? 0, m?.length ?? 0)
 }
 
 watch(() => props.loaded, showJob)
@@ -36,6 +46,11 @@ watch(
   () => [...props.hiddenToolpaths],
   () => scene?.setHiddenToolpaths(props.hiddenToolpaths),
 )
+watch(
+  () => props.frame,
+  (f) => scene?.setHeightField(f),
+)
+watch(() => props.toolMarker, showMarker)
 watch(
   () => props.rapidsVisible,
   (v) => scene?.setRapidsVisible(v),
@@ -49,6 +64,7 @@ watch(
       <span><i class="swatch cutting"></i>Cutting move</span>
       <span><i class="swatch rapid"></i>Rapid</span>
       <span><i class="swatch stock"></i>Stock</span>
+      <span><i class="swatch tool"></i>Tool</span>
     </div>
   </div>
 </template>
@@ -90,5 +106,8 @@ watch(
 }
 .stock {
   background: #6b7280;
+}
+.tool {
+  background: #d9a400;
 }
 </style>

@@ -4,10 +4,19 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MoveType, type MoveList } from '../engine/moveList'
 import type { Box3D } from '../engine/stock'
+import type { SimulationFrame } from '../workers/simulationMessages'
 
 const CUTTING_COLOR = 0x1f6fd1
 const RAPID_COLOR = 0xe8590c
 const STOCK_COLOR = 0x6b7280
+const MACHINED_STOCK_COLOR = 0xb8bcc2
+const TOOL_MARKER_COLOR = 0xd9a400
+
+export interface ToolMarker {
+  tip: { x: number; y: number; z: number }
+  radius: number
+  length: number
+}
 
 interface ToolpathLines {
   cutting: THREE.LineSegments | null
@@ -29,6 +38,13 @@ export class ToolpathScene {
     opacity: 0.6,
   })
   private readonly axes = new THREE.AxesHelper(10)
+  private readonly heightMaterial = new THREE.MeshLambertMaterial({
+    color: MACHINED_STOCK_COLOR,
+    side: THREE.DoubleSide,
+  })
+  private heightMesh: THREE.Mesh | null = null
+  private heightDims = ''
+  private readonly toolMarker: THREE.Mesh
   private hiddenToolpaths = new Set<number>()
   private rapidsVisible = true
   private frameHandle: number | null = null
@@ -50,7 +66,19 @@ export class ToolpathScene {
       this.userMovedCamera = true
     })
 
-    this.scene.add(this.axes, this.jobGroup)
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2)
+    sun.position.set(1, -1.5, 2)
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.4), sun)
+
+    // Unit cylinder standing on its tip point: axis along Z from 0 to 1.
+    const markerGeometry = new THREE.CylinderGeometry(1, 1, 1, 24).rotateX(Math.PI / 2).translate(0, 0, 0.5)
+    this.toolMarker = new THREE.Mesh(
+      markerGeometry,
+      new THREE.MeshLambertMaterial({ color: TOOL_MARKER_COLOR, transparent: true, opacity: 0.75 }),
+    )
+    this.toolMarker.visible = false
+
+    this.scene.add(this.axes, this.jobGroup, this.toolMarker)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
@@ -120,6 +148,70 @@ export class ToolpathScene {
     this.fitCamera()
   }
 
+  /** Shows the machined stock surface from a simulation frame, or removes it for null. */
+  setHeightField(frame: SimulationFrame | null): void {
+    if (!frame) {
+      this.removeHeightMesh()
+      this.requestRender()
+      return
+    }
+    const { nx, ny, cellSize, originX, originY, heights } = frame
+    const dims = `${nx}x${ny}@${cellSize},${originX},${originY}`
+    if (!this.heightMesh || dims !== this.heightDims) {
+      this.removeHeightMesh()
+      const positions = new Float32Array(nx * ny * 3)
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const k = (j * nx + i) * 3
+          positions[k] = originX + (i + 0.5) * cellSize
+          positions[k + 1] = originY + (j + 0.5) * cellSize
+        }
+      }
+      const index = new Uint32Array(Math.max(0, (nx - 1) * (ny - 1) * 6))
+      let n = 0
+      for (let j = 0; j < ny - 1; j++) {
+        for (let i = 0; i < nx - 1; i++) {
+          const a = j * nx + i
+          const b = a + 1
+          const c = a + nx + 1
+          const d = a + nx
+          index[n++] = a
+          index[n++] = b
+          index[n++] = c
+          index[n++] = a
+          index[n++] = c
+          index[n++] = d
+        }
+      }
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      geometry.setIndex(new THREE.BufferAttribute(index, 1))
+      this.heightMesh = new THREE.Mesh(geometry, this.heightMaterial)
+      this.heightDims = dims
+      this.scene.add(this.heightMesh)
+    }
+    const geometry = this.heightMesh.geometry
+    const position = geometry.getAttribute('position') as THREE.BufferAttribute
+    const arr = position.array as Float32Array
+    for (let k = 0; k < nx * ny; k++) arr[k * 3 + 2] = heights[k]
+    position.needsUpdate = true
+    geometry.computeVertexNormals()
+    geometry.computeBoundingSphere()
+    this.requestRender()
+  }
+
+  /** Shows the tool as a cylinder with its tip at the given point, or hides it for null. */
+  setToolMarker(tip: { x: number; y: number; z: number } | null, radius: number, length: number): void {
+    if (!tip || !(radius > 0)) {
+      this.toolMarker.visible = false
+    } else {
+      this.toolMarker.visible = true
+      this.toolMarker.position.set(tip.x, tip.y, tip.z)
+      this.toolMarker.scale.set(radius, radius, length > 0 ? length : radius * 4)
+    }
+    this.requestRender()
+  }
+
   setHiddenToolpaths(hidden: Set<number>): void {
     this.hiddenToolpaths = new Set(hidden)
     this.applyVisibility()
@@ -137,6 +229,10 @@ export class ToolpathScene {
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.frameHandle = null
     this.axes.dispose()
+    this.removeHeightMesh()
+    this.heightMaterial.dispose()
+    this.toolMarker.geometry.dispose()
+    ;(this.toolMarker.material as THREE.Material).dispose()
     this.controls.dispose()
     this.cuttingMaterial.dispose()
     this.rapidMaterial.dispose()
@@ -161,6 +257,14 @@ export class ToolpathScene {
       if (entry.rapid) entry.rapid.visible = shown && this.rapidsVisible
     }
     this.requestRender()
+  }
+
+  private removeHeightMesh(): void {
+    if (!this.heightMesh) return
+    this.scene.remove(this.heightMesh)
+    this.heightMesh.geometry.dispose()
+    this.heightMesh = null
+    this.heightDims = ''
   }
 
   private clearJob(): void {
