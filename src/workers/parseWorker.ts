@@ -11,6 +11,10 @@ self.onmessage = async (event: MessageEvent<ParseRequest>) => {
     const t0 = performance.now()
     const text = await event.data.file.text()
     const job = parseGcode(text)
+    if (job.refusal) {
+      self.postMessage({ ok: false, message: job.refusal.message } satisfies ParseResponse)
+      return
+    }
     const summary = summarizeJob(job)
     response = { ok: true, job, summary, parseMs: performance.now() - t0 }
     transfer = moveListBuffers(job.moves)

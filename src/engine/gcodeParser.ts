@@ -5,6 +5,9 @@
 // ( ) and ; comments, Makera `;@MKR|` records. Anything else becomes a warning with the line number
 // and text; the rest of the job is still parsed.
 //
+// A rotary axis word (A, B or C) on a motion line refuses the whole job: the result carries a
+// refusal and no moves, because a 3-axis simulation of a 4- or 5-axis program would be wrong.
+//
 // The position before the first absolute move on an axis is unknown. Moves that start or end on
 // an unknown axis are not stored: a rapid there is normal (the machine positions itself), a feed
 // move there is reported as a warning.
@@ -57,6 +60,15 @@ export interface ToolChange {
   toolpath: number
 }
 
+/** Why the whole job was not loaded. */
+export interface ParseRefusal {
+  /** 1-based line number. */
+  line: number
+  /** The source line as written. */
+  text: string
+  message: string
+}
+
 export interface ParsedJob {
   header: MakeraHeader
   /** True when the file contains at least one `;@MKR|` record. */
@@ -64,6 +76,8 @@ export interface ParsedJob {
   moves: MoveList
   toolChanges: ToolChange[]
   warnings: ParseWarning[]
+  /** Set when the job is refused; moves, tool changes and warnings are then empty. */
+  refusal: ParseRefusal | null
   lineCount: number
   chordToleranceMm: number
 }
@@ -297,6 +311,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     let unsupportedMotionCode = ''
     let skipReason = ''
     let duplicate = ''
+    let rotaryWord = ''
     let newPlane: Plane = plane
     let newUnitScale = unitScale
     let newIncremental: boolean = incremental
@@ -365,6 +380,9 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
         case LETTER_INDEX('I'): if (hasI) duplicate = 'I'; hasI = true; vi = v; break
         case LETTER_INDEX('J'): if (hasJ) duplicate = 'J'; hasJ = true; vj = v; break
         case LETTER_INDEX('R'): if (hasR) duplicate = 'R'; hasR = true; vr = v; break
+        case LETTER_INDEX('A'): case LETTER_INDEX('B'): case LETTER_INDEX('C'):
+          if (!rotaryWord) rotaryWord = String.fromCharCode(CH_A + letter)
+          break
         case LETTER_INDEX('F'): fWord = v; break
         case LETTER_INDEX('S'): sWord = v; break
         case LETTER_INDEX('T'): tWord = v; break
@@ -378,6 +396,24 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       }
     }
 
+    if (rotaryWord && (gMotion !== Motion.None || (motion !== Motion.None && !cancelMotion))) {
+      return {
+        header,
+        hasMakeraHeader,
+        moves: new MoveListBuilder(1).finish(),
+        toolChanges: [],
+        warnings: [],
+        refusal: {
+          line: lineNo,
+          text: lineText(),
+          message:
+            `This file uses a rotary axis (${rotaryWord} word on line ${lineNo}). ` +
+            'NcStepCompare simulates 3-axis milling only, so the job is not loaded.',
+        },
+        lineCount: lineNo,
+        chordToleranceMm: chordTolerance,
+      }
+    }
     if (duplicate) {
       warn(`Word ${duplicate} appears twice. Line skipped.`)
       continue
@@ -516,6 +552,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     moves: moves.finish(),
     toolChanges,
     warnings,
+    refusal: null,
     lineCount: lineNo,
     chordToleranceMm: chordTolerance,
   }
