@@ -48,11 +48,21 @@ export interface ParseOptions {
   chordToleranceMm?: number
 }
 
+/** A tool change (M6) as programmed. */
+export interface ToolChange {
+  /** 1-based line number of the M6. */
+  line: number
+  tool: number
+  /** Toolpath the change belongs to (the toolpath marker in force), or NO_TOOLPATH. */
+  toolpath: number
+}
+
 export interface ParsedJob {
   header: MakeraHeader
   /** True when the file contains at least one `;@MKR|` record. */
   hasMakeraHeader: boolean
   moves: MoveList
+  toolChanges: ToolChange[]
   warnings: ParseWarning[]
   lineCount: number
   chordToleranceMm: number
@@ -105,6 +115,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
   const header = emptyMakeraHeader()
   let hasMakeraHeader = false
   const warnings: ParseWarning[] = []
+  const toolChanges: ToolChange[] = []
   const moves = new MoveListBuilder(Math.max(1024, Math.ceil(source.length / 20)))
 
   // Modal state.
@@ -386,6 +397,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     if (toolChange) {
       if (selectedTool === NO_TOOL) warn('Tool change (M6) without a tool number (T).')
       tool = selectedTool
+      toolChanges.push({ line: lineNo, tool, toolpath })
     }
     if (spindleWord >= 0) spindle = spindleWord as SpindleStateValue
     if (gMotion !== Motion.None) motion = gMotion
@@ -502,6 +514,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     header,
     hasMakeraHeader,
     moves: moves.finish(),
+    toolChanges,
     warnings,
     lineCount: lineNo,
     chordToleranceMm: chordTolerance,
