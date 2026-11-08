@@ -148,6 +148,12 @@ source, comments or UI text.
 
 ## Working method
 
+**Lean project.** This is a personal tool used now and then: keep token and time spend low. Write tests
+only for engine logic where a bug would otherwise hide (G-code parsing, arcs, simulation math, findings,
+time estimate), a few focused cases each. No UI component tests, no mutation testing, no test for trivial
+code. Prefer one agent doing a whole milestone over many small agents; no extra review rounds unless the
+owner asks.
+
 **Verification bar.** "Verified" means `npx vue-tsc --noEmit` and `npx vitest run` both green, plus a
 check in the browser preview for anything visible. There is no CI; the full vitest suite runs locally.
 A bug fix is test-driven: write the failing test, see it fail, fix, see it pass. Make code changes first,
