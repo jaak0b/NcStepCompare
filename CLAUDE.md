@@ -167,9 +167,9 @@ check in the browser preview for anything visible. There is no CI; the full vite
 A bug fix is test-driven: write the failing test, see it fail, fix, see it pass. Make code changes first,
 then run tests once at the end; do not re-run them after every edit.
 
-**Browser checks never take the owner's mouse.** A normal (headed) browser is fine, but it runs
-minimized or in the background (e.g. `--start-minimized`) and is driven only through automation, never by
-real mouse moves. It never comes to the front or captures the owner's mouse or keyboard focus.
+**Agents never launch a browser.** Their browser windows kept taking the owner's mouse focus even when
+told to start minimized. Only the parent session checks and measures in the browser, using the Claude
+app's built-in browser pane. Agents work from the parent's measurements and from unit tests.
 
 **Subagents.** Implementation work goes to background `general-purpose` agents on Opus, one milestone (or
 one coherent piece) at a time. Read-only lookups go to `Explore`. Every agent gets a title that names what
