@@ -54,6 +54,14 @@ browser, Web Workers for the simulation, vitest for tests.
    Tabs get no special treatment: they are material left outside the part, so they show as leftover
    like any other (owner decision 2026-11-08). A missing cut-out shows the same way.
    Plunge check: an end mill feeding straight down into material still present (drills excluded).
+   Owner decisions 2026-11-09: engagement excludes thread mills and drills and is shown as one summary
+   row per toolpath (max width and depth of cut, number of moves over the limit), not one row per move.
+   Plunges are likewise one row per toolpath (count, deepest plunge).
+   "Show missing material" checkbox: draws the material the model needs but the G-code cut away (from
+   the machined surface up to the model surface) as a see-through red solid. Thread holes get their own
+   colour (purple), matching the "thread" finding.
+   Layout: workflow tabs in the side panel (Job, Tools, Parts, Check, Info) with a status line that is
+   always visible, instead of one long list.
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
 7. Only tool-table edits are saved in the browser (`localStorage`), keyed by the tool's Makera Studio
