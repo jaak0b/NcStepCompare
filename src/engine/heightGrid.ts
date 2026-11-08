@@ -26,6 +26,9 @@ export interface HeightGrid {
   heights: Float32Array
 }
 
+/** Cell layout of a height grid: cell (i, j) has its centre at origin + (i + 0.5, j + 0.5) * cellSize. */
+export type GridGeometry = Pick<HeightGrid, 'nx' | 'ny' | 'cellSize' | 'originX' | 'originY'>
+
 /**
  * Grid size limits. The grid takes 4 bytes per cell in the simulation and again as the display
  * texture, and checkpoints grow with it: 16 million cells is 64 MB each. Most GPUs accept textures up
