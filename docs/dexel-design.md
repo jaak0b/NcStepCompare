@@ -58,25 +58,38 @@ component per hole; rows for measured pitch and major diameter.
 One source: the worker computes eroded and dilated E once per compare; findings, colours and the
 missing-material solid all read it.
 
-## 5. Rendering
-Hybrid: `stockSurface.ts` keeps the top surface. Heightfield wall fragments are discarded where Z lies
-in a gap of the higher column (gap textures read only in tiles with gaps). New
-`src/viewer/undercutMesh.ts`: blocky boundary of the dexels (gap ceilings and floors, side quads from
-neighbouring columns), one mesh per 128 tile, rebuilt only for dirty tiles, per-face deviation class from
-the worker. Fixture: about 1.6M triangles. Without undercuts the path and speed are unchanged.
-Rejected: marching cubes / dual contouring (quantise Z), shader ray marching (cost and fragility),
+## 5. Rendering (accuracy first, speed second)
+Exact boundary extraction of the dexel model, drawn as triangles (van Hook 1986; Stautner and Müller):
+every interval end is a horizontal face at its exact Z, every column side where neighbouring interval
+sets differ is a vertical face. No Z quantisation, no smoothing.
+- Top surface: `stockSurface.ts` stays; wall fragments inside a gap of the higher column are discarded.
+- New `src/viewer/undercutMesh.ts`: per gap a ceiling quad at `hi` and a floor quad at `lo`, side quads
+  from the symmetric difference of neighbouring interval sets; one mesh per 128 tile, rebuilt only for
+  dirty tiles; faces coloured from the same eroded/dilated model intervals the findings use.
+- Level of detail: tiles holding gaps are always drawn at full resolution; tiles without gaps keep
+  today's sub-pixel screen-space error rule (depth of every cell stays exact up close); the undercut
+  mesh is never decimated.
+- Clipping plane (three.js `clippingPlanes`, both meshes) to look into holes and grooves; it cuts the
+  drawn faces only, never the material data.
+- Fixture: about 1.6M extra triangles; slower but correct for jobs with large undercut areas.
+Rejected: marching cubes / dual contouring (change the shape), shader ray marching (fragile),
 instanced boxes (6M instances).
 
 ## 6. Migration (app and tests green after each step)
-0. Refuse rotary-axis files at the parser boundary: A, B or C words on a motion line, or a rotary setup
-   in the Makera header, reject the load with a clear message (added by the parent session).
+0. Refuse rotary-axis files at the parser boundary (about 1 hour): an A, B or C word on a motion line
+   (`gcodeParser.ts` word switch) or a rotary setup in the Makera header (`STOCK id=cylinder`, already
+   mapped in `makeraHeader.ts`) rejects the job through the parse result with one clear message naming
+   the line or field, e.g. "This file uses a rotary axis (A word on line 1234). NcStepCompare simulates
+   3-axis milling only, so the job is not loaded." Files with no rotary sign load as today. Tests: A word
+   on G1 refused, cylinder header refused, fixture loads.
 1. Profile tool model and bands; height-grid results bit-identical.
 2. `DexelStock` with tests (interval subtraction, pool growth, checkpoints).
 3. Dexel sweep and simulation on `DexelStock`; synthetic tests (T-slot gap, single-tooth helix groove
    every P, lollipop); fixture timing gate.
 4. Model dexels and interval deviation.
 5. Findings on dexel components and non-cutting contact.
-6. Renderer: wall discard and undercut mesh; frame timing before/after; browser check of threads.
+6. Renderer: wall discard, undercut mesh and clipping plane; frame timing before/after; browser check
+   of threads.
 7. Tools tab fields for the new types; missing-material view from gouge intervals.
 
 ## 7. Open questions (recommendation first)
@@ -84,7 +97,9 @@ instanced boxes (6M instances).
 - Q2 T6 data: ISO 68-1 assumed values, pitch required as user entry; owner may supply the data sheet.
 - Q3 Concave form cutters (corner rounding): out of scope until needed.
 - Q4 Tri-dexel: no.
-- Q5 Section plane to look into threads: yes, small later step.
+- Q5 (section plane) withdrawn: the clipping plane is part of step 6.
+- Q6 Does Makera Studio mark rotary jobs other than `STOCK id=cylinder`? Refuse on `cylinder` and on
+  any A, B or C motion word; anything else loads.
 
 ## 8. Effort
-About 24 agent-hours: steps 1 to 7 = 2, 3, 5, 4, 3, 5, 2.
+About 25 agent-hours: steps 0 to 7 = 1, 2, 3, 5, 4, 3, 5, 2.
