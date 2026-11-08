@@ -167,9 +167,11 @@ check in the browser preview for anything visible. There is no CI; the full vite
 A bug fix is test-driven: write the failing test, see it fail, fix, see it pass. Make code changes first,
 then run tests once at the end; do not re-run them after every edit.
 
-**Agents never launch a browser.** Their browser windows kept taking the owner's mouse focus even when
-told to start minimized. Only the parent session checks and measures in the browser, using the Claude
-app's built-in browser pane. Agents work from the parent's measurements and from unit tests.
+**Agents launch browsers headless only, never a window.** Windowed browsers kept taking the owner's mouse
+focus even when told to start minimized. An agent that must measure or check in a browser uses headless
+Chromium (`--headless=new`, with real GPU flags such as `--use-angle=d3d11 --enable-gpu` for frame
+timing) driven by automation. The parent session may also check in the Claude app's built-in browser
+pane.
 
 **Subagents.** Implementation work goes to background `general-purpose` agents on Opus, one milestone (or
 one coherent piece) at a time. Read-only lookups go to `Explore`. Every agent gets a title that names what
