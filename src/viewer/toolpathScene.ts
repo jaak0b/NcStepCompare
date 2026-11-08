@@ -337,6 +337,7 @@ export class ToolpathScene {
     this.frameHandle = requestAnimationFrame(() => {
       this.frameHandle = null
       const t0 = performance.now()
+      this.stockSurface?.updateView(this.camera)
       this.renderer.render(this.scene, this.camera)
       this.lastRenderMs = performance.now() - t0
     })
