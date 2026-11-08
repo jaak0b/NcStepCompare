@@ -1,6 +1,7 @@
 // Main-thread handle on the simulation worker. Starting a new run terminates the previous worker,
 // which cancels a simulation still in progress.
-import type { OrientationCandidate, Tolerances } from '../engine/deviation'
+import type { OrientationCandidate } from '../engine/autoOrient'
+import type { Tolerances } from '../engine/deviation'
 import type { PartPlacement } from '../engine/partPlacement'
 import type { MoveList } from '../engine/moveList'
 import type { TriangleMesh } from '../engine/stepModel'

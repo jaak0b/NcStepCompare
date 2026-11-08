@@ -2,7 +2,8 @@
 // with only the part of the grid that changed. It also owns the comparison with the placed STEP
 // parts, because that needs the height grid: the model grid, the tolerance limits, the deviation
 // summary of each shown frame, and the auto-orient ranking against the final stock.
-import { DeviationTracker, footprintBounds, rankOrientations, toleranceLimits } from '../engine/deviation'
+import { autoOrient as rankPlacements } from '../engine/autoOrient'
+import { DeviationTracker, footprintBounds, toleranceLimits } from '../engine/deviation'
 import { mergePartGrids, rasterizePart } from '../engine/modelGrid'
 import { MaterialSimulation, planCheckpoints } from '../engine/simulation'
 import { cutterProfile, type CutterProfile } from '../engine/toolShape'
@@ -160,7 +161,7 @@ function autoOrient(req: Extract<SimulationRequest, { type: 'autoOrient' }>) {
   try {
     if (!sim || !finalHeights) throw new Error('Auto-orient needs a finished simulation.')
     const t0 = performance.now()
-    const candidates = rankOrientations(sim.grid, finalHeights, req.mesh, req.at)
+    const candidates = rankPlacements(sim.grid, finalHeights, req.mesh, req.at)
     post({ type: 'orientations', requestId: req.requestId, candidates, ms: performance.now() - t0 })
   } catch (err) {
     post({ type: 'error', message: messageOf(err), during: 'autoOrient', requestId: req.requestId })

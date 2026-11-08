@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
-import { DeviationTracker, footprintBounds, rankOrientations, toleranceLimits } from '../src/engine/deviation'
+import { autoOrient } from '../src/engine/autoOrient'
+import { DeviationTracker, footprintBounds, toleranceLimits } from '../src/engine/deviation'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { mergePartGrids, rasterizePart } from '../src/engine/modelGrid'
 import { placePositions, type PartPlacement } from '../src/engine/partPlacement'
@@ -69,10 +70,13 @@ describe('backplate fixture against its STEP model', async () => {
     expect(part.bounds.max.y - part.bounds.min.y).toBeCloseTo(7, 4)
   })
 
-  it('auto-orient picks the thickness along model Y, turned so the part matches the cut', () => {
-    const ranked = rankOrientations(sim.grid, sim.grid.heights, part.mesh, placement)
+  it('auto-orient from the default placement (stock centre 75, 50) finds the cut part at 38.5, 50.0', () => {
+    const best = autoOrient(sim.grid, sim.grid.heights, part.mesh, { centerX: 75, centerY: 50, bottomZ: -10 })[0]
 
-    expect([ranked[0].upAxis, ranked[0].quarterTurns]).toEqual(['-Y', 2])
+    expect([best.upAxis, best.quarterTurns]).toEqual(['-Y', 2])
+    // Within one cell (0.05 mm).
+    expect(Math.abs(best.centerX - 38.5)).toBeLessThanOrEqual(0.05)
+    expect(Math.abs(best.centerY - 50)).toBeLessThanOrEqual(0.05)
   })
 
   it('places the part top at Z -3.0', () => {

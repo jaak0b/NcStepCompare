@@ -28,16 +28,7 @@
 // chord tolerance, the G-code's rounding), so with a tolerance below the cell size the window holds
 // only the cell itself and such walls can show as one-cell lines of gouge or leftover.
 import type { GridGeometry } from './heightGrid'
-import { MODEL_THROUGH, rasterizePart, type ModelGrid, type PartModelGrid } from './modelGrid'
-import {
-  placePositions,
-  QUARTER_TURNS,
-  UP_AXES,
-  type PartPlacement,
-  type QuarterTurns,
-  type UpAxis,
-} from './partPlacement'
-import type { TriangleMesh } from './stepModel'
+import { MODEL_THROUGH, type ModelGrid } from './modelGrid'
 
 /** Assumed defaults, editable in the UI. */
 export const DEFAULT_GOUGE_TOLERANCE_MM = 0.05
@@ -287,48 +278,4 @@ export class DeviationTracker {
       maxLeftover: this.maxLeftover,
     }
   }
-}
-
-/** Mean |deviation| of one part's model grid against the machined grid, and its footprint size. */
-function partScore(g: GridGeometry, machined: Float32Array, p: PartModelGrid) {
-  let n = 0
-  let sum = 0
-  for (let j = 0; j < p.h; j++) {
-    for (let i = 0; i < p.w; i++) {
-      const d = cellDeviation(machined[(p.j0 + j) * g.nx + p.i0 + i], p.top[j * p.w + i], p.bottomZ)
-      if (d === null) continue
-      n++
-      sum += Math.abs(d)
-    }
-  }
-  return { footprintCells: n, meanAbsDeviation: n > 0 ? sum / n : Infinity }
-}
-
-export interface OrientationCandidate {
-  upAxis: UpAxis
-  quarterTurns: QuarterTurns
-  /** Mean absolute deviation over the candidate's footprint, mm (lower is better). */
-  meanAbsDeviation: number
-  footprintCells: number
-}
-
-/**
- * Tries the 6 up axes x 4 quarter turns with the given centre and bottom Z, and ranks them by the
- * mean absolute deviation between the machined grid and the model over the part footprint.
- */
-export function rankOrientations(
-  g: GridGeometry,
-  machined: Float32Array,
-  mesh: TriangleMesh,
-  at: Pick<PartPlacement, 'centerX' | 'centerY' | 'bottomZ'>,
-): OrientationCandidate[] {
-  const out: OrientationCandidate[] = []
-  for (const upAxis of UP_AXES) {
-    for (const quarterTurns of QUARTER_TURNS) {
-      const positions = placePositions(mesh, { ...at, upAxis, quarterTurns })
-      const s = partScore(g, machined, rasterizePart(g, positions, mesh.indices))
-      out.push({ upAxis, quarterTurns, ...s })
-    }
-  }
-  return out.sort((a, b) => a.meanAbsDeviation - b.meanAbsDeviation)
 }

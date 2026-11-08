@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import type { OrientationCandidate } from '../engine/deviation'
+import type { OrientationCandidate } from '../engine/autoOrient'
 import { QUARTER_TURNS, UP_AXES, type PartPlacement, type QuarterTurns, type UpAxis } from '../engine/partPlacement'
 import type { Box3D } from '../engine/stock'
 import type { StepPart } from '../engine/stepModel'
@@ -8,8 +8,6 @@ import { parseDecimalInput } from '../ui/decimalInput'
 
 const props = defineProps<{
   part: StepPart
-  /** True when the placement came from the saved setup. */
-  restored: boolean
   placement: PartPlacement
   placedBounds: Box3D
   /** Why auto-orient cannot run now, or null when it can. */
@@ -107,9 +105,6 @@ const orientationName = (c: { upAxis: UpAxis; quarterTurns: QuarterTurns }) =>
     </div>
     <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
     <dl>
-      <dt>Placement</dt>
-      <dd v-if="restored">Saved placement applied (this .nc file, same STEP file name and size)</dd>
-      <dd v-else>New part: centred on the stock, bottom on the stock bottom, then as entered</dd>
       <dt>Placed bounding box (calculated)</dt>
       <dd>
         X {{ mm(placedBounds.min.x) }} to {{ mm(placedBounds.max.x) }}, Y {{ mm(placedBounds.min.y) }} to
@@ -121,17 +116,19 @@ const orientationName = (c: { upAxis: UpAxis; quarterTurns: QuarterTurns }) =>
         Auto-orient
       </button>
       <span v-if="autoOrientBlocked" class="note">{{ autoOrientBlocked }}</span>
-      <span v-else-if="orient.running" class="note">Trying 24 orientations.</span>
+      <span v-else-if="orient.running" class="note">Searching 24 orientations and every position.</span>
     </div>
     <p v-if="orient.error" class="problem">Auto-orient failed: {{ orient.error }}</p>
     <template v-if="orient.candidates">
       <p class="note">
-        Best 3 of 24 orientations, by mean absolute deviation from the final stock over the part outline
-        (measured, {{ ((orient.ms ?? 0) / 1000).toFixed(1) }} s). The best one is applied.
+        Best 3 of 24 orientations, each at its best position, by mean absolute deviation from the final stock
+        over the part outline (measured, {{ ((orient.ms ?? 0) / 1000).toFixed(1) }} s). The best one is applied;
+        bottom Z is kept.
       </p>
       <ol class="candidates">
         <li v-for="c in orient.candidates.slice(0, 3)" :key="c.upAxis + c.quarterTurns">
-          {{ orientationName(c) }}: {{ c.meanAbsDeviation.toFixed(3) }} mm
+          {{ orientationName(c) }}, centre X {{ c.centerX.toFixed(3) }}, Y {{ c.centerY.toFixed(3) }}:
+          {{ c.meanAbsDeviation.toFixed(3) }} mm
         </li>
       </ol>
     </template>

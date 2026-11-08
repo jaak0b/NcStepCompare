@@ -1,4 +1,5 @@
-import type { DeviationSummary, OrientationCandidate, Tolerances } from '../engine/deviation'
+import type { OrientationCandidate } from '../engine/autoOrient'
+import type { DeviationSummary, Tolerances } from '../engine/deviation'
 import type { PartPlacement } from '../engine/partPlacement'
 import type { CellRect, SimulationMoves } from '../engine/simulation'
 import type { TriangleMesh } from '../engine/stepModel'
