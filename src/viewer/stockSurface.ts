@@ -5,9 +5,11 @@
 // from the texture, so no per-cell geometry exists on the CPU. Vertices sit at cell centres, plus
 // one extra row and column clamped to each stock edge, so the surface reaches the stock edge
 // exactly and never beyond it. A wall between two cells is drawn as a slope across one cell width
-// (0.05 mm by default). Side walls run down every stock edge to the stock bottom. Faces are
-// flat-shaded from screen-space derivatives. Where the material is cut down to the stock bottom or
-// below, the surface is discarded, so through-cuts show as openings.
+// (0.05 mm by default). Side walls run down every stock edge to the stock bottom. Each fragment of the
+// top surface is shaded from the four cells around it at full grid resolution, whatever the vertex
+// step of its tile: the normal is the analytic normal of the bilinear patch through their centres.
+// Where the material is cut down to the stock bottom or below, the surface is discarded, so
+// through-cuts show as openings.
 //
 // The stock is drawn as a closed solid: the same tile drawn at the stock bottom Z forms the bottom
 // face, with the same openings (the discard rule uses the same interpolated heights, so its edge
@@ -18,20 +20,24 @@
 //
 // Playback uploads only the changed rectangle of cells into the texture.
 //
-// With STEP parts placed, a second texture holds two heights per cell from the comparison: below the
-// first the cell is a gouge, above the second it is leftover. The fragment shader compares the shown
-// machined height with them, so the deviation colours follow playback with no extra work. Each
-// fragment takes the class of the highest of the cells around it, so a wall is coloured by its
-// material side. Cells outside the part outlines are compared with the stock bottom, so material
-// left there shows as leftover.
+// With STEP parts placed, the comparison gives two heights per cell: below the first the cell is a
+// gouge, above the second it is leftover. They stay on the CPU; a texture of one byte per cell holds
+// the class of each cell (gouge, leftover, within tolerance), recomputed for the changed rectangle
+// with every playback upload. One byte instead of two floats per cell keeps the fragment's read small,
+// which matters most when the stock is seen from afar and neighbouring fragments read cells far
+// apart. Each fragment takes the class of the highest of the cells around it, so a wall is coloured
+// by its material side. Cells outside the part outlines are compared with the stock bottom, so
+// material left there shows as leftover.
 //
 // Drawing cost is bounded per frame with chunked level of detail (Ulrich, "Rendering massive
 // terrains using chunked level of detail control", 2002), driven by a screen-space error bound:
 // - Per-tile frustum culling: each tile gets a bounding box from the min and max height of its
 //   cells, so tiles outside the view are not drawn.
 // - Per tile, the vertex step is the largest power of two cells whose projected size at the tile's
-//   nearest point stays within MAX_QUAD_PX device pixels. Geometry finer than a pixel cannot be
-//   seen, so the picture keeps every cell's detail; up close every tile is drawn at full resolution.
+//   nearest point stays within MAX_QUAD_PX device pixels. Shading and colour come from every cell
+//   (above), so a coarser step moves only the drawn outline of a wall, by at most that many pixels;
+//   triangles of about one pixel would instead make the GPU shade most pixels several times. Up close,
+//   where one cell covers MAX_QUAD_PX pixels or more, every tile is drawn at full resolution.
 // - Cracks between tiles of different steps are closed by edge stitching: a vertex on the edge
 //   shared with a coarser neighbour takes the height of the coarser edge at that point. The side
 //   walls do the same with the step of the tile they border.
@@ -44,11 +50,13 @@ import type { GridInfo } from '../workers/simulationMessages'
 
 const TILE = 128
 /** Largest projected size of one drawn quad, in device pixels. */
-const MAX_QUAD_PX = 1
+const MAX_QUAD_PX = 4
 const LEVELS = Math.log2(TILE) + 1
 const STOCK_COLOR = new THREE.Color(0xb8bcc2)
-/** Texture stand-in for -Infinity (no gouge limit), which a float texture lookup should not carry. */
-const NO_LIMIT = -1e30
+/** Values of the per-cell class texture. */
+const WITHIN = 0
+const GOUGE = 1
+const LEFTOVER = 2
 
 const COMMON = /* glsl */ `
 uniform highp sampler2D uHeights;
@@ -95,12 +103,14 @@ in vec2 aTile;
 out vec3 vWorld;
 out float vHeight;
 out vec2 vXY;
+flat out int vStep;
 
 void main() {
   ivec2 local = ivec2(position.xy);
   ivec2 tile = ivec2(aTile) / TILE;
   ivec2 v = min(ivec2(aTile) + local, uGridSize + 1);
   int own = tileStep(tile);
+  vStep = own;
   float h;
   if (local.x == 0 || local.x == TILE) {
     ivec2 n = tile + ivec2(local.x == 0 ? -1 : 1, 0);
@@ -131,6 +141,7 @@ in float aBottom;
 out vec3 vWorld;
 out float vHeight;
 out vec2 vXY;
+flat out int vStep;
 
 void main() {
   ivec2 v = ivec2(aVertex);
@@ -142,6 +153,7 @@ void main() {
     : ivec2(v.x == 0 ? 0 : uTiles.x - 1, min(v.y / TILE, uTiles.y - 1));
   float top = max(edgeHeight(v, alongX, tileStep(tile)), uBottom);
   float z = aBottom > 0.5 ? uBottom : top;
+  vStep = 1;
   vHeight = z;
   vXY = vertexXY(v);
   vec4 world = modelMatrix * vec4(vXY, z, 1.0);
@@ -152,7 +164,7 @@ void main() {
 
 const FRAGMENT = /* glsl */ `
 uniform highp sampler2D uHeights;
-uniform highp sampler2D uLimits;
+uniform sampler2D uClass;
 uniform bool uCompare;
 uniform ivec2 uGridSize;
 uniform float uCellSize;
@@ -165,34 +177,54 @@ uniform vec3 uWithinColor;
 in vec3 vWorld;
 in float vHeight;
 in vec2 vXY;
+flat in int vStep;
 out vec4 fragColor;
 
 void main() {
+  // The fragment lies between the centres of 2 x 2 cells; their heights h00, h10, h01, h11 (x then y)
+  // span a bilinear patch, read at full grid resolution whatever the vertex step of the tile.
+  vec2 p = (vXY - uOrigin) / uCellSize - 0.5;
+  ivec2 base = ivec2(floor(p));
+  vec2 f = p - vec2(base);
+  ivec2 c00 = clamp(base, ivec2(0), uGridSize - 1);
+  ivec2 c11 = clamp(base + 1, ivec2(0), uGridSize - 1);
+  ivec2 c10 = ivec2(c11.x, c00.y);
+  ivec2 c01 = ivec2(c00.x, c11.y);
+  float h00 = texelFetch(uHeights, c00, 0).r;
+  float h10 = texelFetch(uHeights, c10, 0).r;
+  float h01 = texelFetch(uHeights, c01, 0).r;
+  float h11 = texelFetch(uHeights, c11, 0).r;
 #ifdef THROUGH_CUTS
-  if (vHeight <= uBottom) discard;
+  // At the full vertex step the drawn surface is the grid itself; a coarser tile takes the opening
+  // from the grid so it keeps every cell of it.
+  float hCut = vStep == 1 ? vHeight : mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  if (hCut <= uBottom) discard;
 #endif
   vec3 color = uColor;
 #ifndef BOTTOM_FACE
   if (uCompare) {
-    // A fragment lies between the centres of up to 2 x 2 cells. It takes the class of the highest of
-    // them: a wall is the slope from a high cell down to a low one, so the wall shows the material
-    // side's colour over its full height (part walls, hole walls and the side walls alike).
-    ivec2 base = ivec2(floor((vXY - uOrigin) / uCellSize - 0.5));
-    ivec2 c = clamp(base, ivec2(0), uGridSize - 1);
-    float h = texelFetch(uHeights, c, 0).r;
-    for (int k = 1; k < 4; k++) {
-      ivec2 n = clamp(base + ivec2(k & 1, k >> 1), ivec2(0), uGridSize - 1);
-      float hn = texelFetch(uHeights, n, 0).r;
-      if (hn > h) {
-        h = hn;
-        c = n;
-      }
-    }
-    vec2 limit = texelFetch(uLimits, c, 0).rg;
-    color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
+    // The fragment takes the class of the highest of its 2 x 2 cells: a wall is the slope from a
+    // high cell down to a low one, so the wall shows the material side's colour over its full height
+    // (part walls, hole walls and the side walls alike).
+    ivec2 c = c00;
+    float h = h00;
+    if (h10 > h) { h = h10; c = c10; }
+    if (h01 > h) { h = h01; c = c01; }
+    if (h11 > h) { h = h11; c = c11; }
+    int cls = int(texelFetch(uClass, c, 0).r * 255.0 + 0.5);
+    color = cls == GOUGE ? uGougeColor : (cls == LEFTOVER ? uLeftoverColor : uWithinColor);
   }
 #endif
+#if defined(SKIRT)
   vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+#elif defined(BOTTOM_FACE)
+  vec3 n = vec3(0.0, 0.0, -1.0);
+#else
+  // Analytic normal of the bilinear patch: the grid's own slope, also on tiles drawn coarser.
+  float dx = mix(h10 - h00, h11 - h01, f.y);
+  float dy = mix(h01 - h00, h11 - h10, f.x);
+  vec3 n = normalize(vec3(-dx, -dy, uCellSize));
+#endif
   if (dot(n, cameraPosition - vWorld) < 0.0) n = -n;
   vec3 light = normalize(vec3(0.35, -0.55, 1.0));
   float diffuse = max(dot(n, light), 0.0);
@@ -213,7 +245,9 @@ interface TileBatch {
 
 export class StockSurface {
   private readonly texture: THREE.DataTexture
-  private limitsTexture: THREE.DataTexture
+  /** Comparison limits per cell, interleaved gouge and leftover height; null for plain stock. */
+  private limits: Float32Array | null = null
+  private classTexture: THREE.DataTexture
   private readonly group = new THREE.Group()
   private readonly skirt: THREE.Mesh
   private readonly uniforms: Record<string, THREE.IUniform>
@@ -264,10 +298,10 @@ export class StockSurface {
     this.stepTexture.generateMipmaps = false
     this.stepTexture.needsUpdate = true
 
-    this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
+    this.classTexture = StockSurface.classTextureFrom(new Uint8Array(1), 1, 1)
     this.uniforms = {
       uHeights: { value: this.texture },
-      uLimits: { value: this.limitsTexture },
+      uClass: { value: this.classTexture },
       uTileStep: { value: this.stepTexture },
       uTiles: { value: new THREE.Vector2(this.tilesX, this.tilesY) },
       uCompare: { value: false },
@@ -394,10 +428,22 @@ export class StockSurface {
     for (let j = 0; j < h; j++) {
       full.set(data.subarray(j * w, (j + 1) * w), (rect.minJ + j) * this.grid.nx + rect.minI)
     }
+    const position = new THREE.Vector2(rect.minI, rect.minJ)
     const patch = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.FloatType)
     patch.needsUpdate = true
-    this.renderer.copyTextureToTexture(patch, this.texture, null, new THREE.Vector2(rect.minI, rect.minJ))
+    this.renderer.copyTextureToTexture(patch, this.texture, null, position)
     patch.dispose()
+    if (this.limits) {
+      const classes = new Uint8Array(w * h)
+      this.classify(rect, classes, w)
+      const fullClasses = this.classTexture.image.data as Uint8Array
+      for (let j = 0; j < h; j++) {
+        fullClasses.set(classes.subarray(j * w, (j + 1) * w), (rect.minJ + j) * this.grid.nx + rect.minI)
+      }
+      const classPatch = StockSurface.classTextureFrom(classes, w, h)
+      this.renderer.copyTextureToTexture(classPatch, this.classTexture, null, position)
+      classPatch.dispose()
+    }
     // Cell c is read by vertex c + 1, which lies in tile (c + 1) / TILE and, on a tile edge, also
     // in the tile before it.
     this.updateTileHeights(
@@ -413,27 +459,42 @@ export class StockSurface {
    * no gouge limit). Null shows plain stock.
    */
   setLimits(limits: Float32Array | null): void {
-    this.limitsTexture.dispose()
+    this.classTexture.dispose()
+    this.limits = limits
+    const { nx, ny } = this.grid
     if (!limits) {
-      this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
-      this.uniforms.uCompare.value = false
+      this.classTexture = StockSurface.classTextureFrom(new Uint8Array(1), 1, 1)
     } else {
-      const data = new Float32Array(limits.length)
-      for (let k = 0; k < limits.length; k++) {
-        const v = limits[k]
-        data[k] = v === -Infinity ? NO_LIMIT : v
-      }
-      this.limitsTexture = StockSurface.limitsTextureFrom(data, this.grid.nx, this.grid.ny)
-      this.uniforms.uCompare.value = true
+      const classes = new Uint8Array(nx * ny)
+      this.classify({ minI: 0, maxI: nx - 1, minJ: 0, maxJ: ny - 1 }, classes, nx)
+      this.classTexture = StockSurface.classTextureFrom(classes, nx, ny)
     }
-    this.uniforms.uLimits.value = this.limitsTexture
+    this.uniforms.uCompare.value = limits !== null
+    this.uniforms.uClass.value = this.classTexture
   }
 
-  private static limitsTextureFrom(data: Float32Array, w: number, h: number): THREE.DataTexture {
-    const t = new THREE.DataTexture(data, w, h, THREE.RGFormat, THREE.FloatType)
+  /** Writes the class of each cell of rect into out: rows of `stride` bytes from rect's corner. */
+  private classify(rect: CellRect, out: Uint8Array, stride: number): void {
+    const limits = this.limits!
+    const heights = this.texture.image.data as Float32Array
+    const nx = this.grid.nx
+    for (let j = rect.minJ; j <= rect.maxJ; j++) {
+      const row = (j - rect.minJ) * stride - rect.minI
+      for (let i = rect.minI; i <= rect.maxI; i++) {
+        const c = j * nx + i
+        const h = heights[c]
+        out[row + i] = h < limits[c * 2] ? GOUGE : h > limits[c * 2 + 1] ? LEFTOVER : WITHIN
+      }
+    }
+  }
+
+  private static classTextureFrom(data: Uint8Array, w: number, h: number): THREE.DataTexture {
+    const t = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType)
     t.minFilter = THREE.NearestFilter
     t.magFilter = THREE.NearestFilter
     t.generateMipmaps = false
+    // Rows of one byte per cell are not padded to four bytes.
+    t.unpackAlignment = 1
     t.needsUpdate = true
     return t
   }
@@ -444,7 +505,7 @@ export class StockSurface {
     this.skirt.geometry.dispose()
     for (const m of this.materials) m.dispose()
     this.texture.dispose()
-    this.limitsTexture.dispose()
+    this.classTexture.dispose()
     this.stepTexture.dispose()
   }
 
@@ -492,7 +553,7 @@ export class StockSurface {
       vertexShader,
       fragmentShader: FRAGMENT,
       uniforms: this.uniforms,
-      defines: { TILE, ...defines },
+      defines: { TILE, WITHIN, GOUGE, LEFTOVER, ...defines },
       side,
     })
     this.materials.push(m)
