@@ -42,14 +42,28 @@ export class ToolpathScene {
     opacity: 0.6,
   })
   private readonly axes = new THREE.AxesHelper(10)
+  /**
+   * The STEP outline is drawn in its own pass with hidden-line removal against the parts only: after
+   * the main scene the depth buffer is cleared, the part faces are drawn into depth alone, then the
+   * edges are drawn depth-tested. So the stock never hides the outline (the placement can be checked
+   * before anything is cut), but edges behind the part's own faces are not drawn.
+   */
+  private readonly outlineScene = new THREE.Scene()
   private readonly outlineGroup = new THREE.Group()
-  private readonly outlines = new Map<string, { positions: Float32Array; lines: THREE.LineSegments }>()
-  // Drawn through the stock so the part placement can be checked before anything is cut.
+  private readonly outlines = new Map<string, { positions: Float32Array; lines: THREE.LineSegments; faces: THREE.Mesh }>()
   private readonly outlineMaterial = new THREE.LineBasicMaterial({
     color: PART_OUTLINE_COLOR,
     transparent: true,
     opacity: 0.55,
-    depthTest: false,
+  })
+  // Depth only. The polygon offset pushes the faces back by a slope-scaled depth bias, so the edges
+  // lying on them pass the depth test instead of flickering against them.
+  private readonly outlineFaceMaterial = new THREE.MeshBasicMaterial({
+    colorWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   })
   private stockSurface: StockSurface | null = null
   /** CPU time of the last renderer.render call in ms, measured (GPU work runs after it). */
@@ -88,8 +102,8 @@ export class ToolpathScene {
     )
     this.toolMarker.visible = false
 
-    this.outlineGroup.renderOrder = 1
-    this.scene.add(this.axes, this.jobGroup, this.toolMarker, this.outlineGroup)
+    this.scene.add(this.axes, this.jobGroup, this.toolMarker)
+    this.outlineScene.add(this.outlineGroup)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
@@ -186,24 +200,20 @@ export class ToolpathScene {
     const keep = new Set(parts.map((p) => p.id))
     for (const [id, o] of this.outlines) {
       if (keep.has(id)) continue
-      this.outlineGroup.remove(o.lines)
-      o.lines.geometry.dispose()
+      this.removeOutline(o)
       this.outlines.delete(id)
     }
     for (const p of parts) {
       const old = this.outlines.get(p.id)
       if (old?.positions === p.positions) continue
-      if (old) {
-        this.outlineGroup.remove(old.lines)
-        old.lines.geometry.dispose()
-      }
+      if (old) this.removeOutline(old)
       const mesh = new THREE.BufferGeometry()
       mesh.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
       mesh.setIndex(new THREE.BufferAttribute(p.indices, 1))
       const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, OUTLINE_CREASE_ANGLE), this.outlineMaterial)
-      mesh.dispose()
-      this.outlineGroup.add(lines)
-      this.outlines.set(p.id, { positions: p.positions, lines })
+      const faces = new THREE.Mesh(mesh, this.outlineFaceMaterial)
+      this.outlineGroup.add(faces, lines)
+      this.outlines.set(p.id, { positions: p.positions, lines, faces })
     }
     this.requestRender()
   }
@@ -213,11 +223,14 @@ export class ToolpathScene {
     this.requestRender()
   }
 
+  private removeOutline(o: { lines: THREE.LineSegments; faces: THREE.Mesh }): void {
+    this.outlineGroup.remove(o.lines, o.faces)
+    o.lines.geometry.dispose()
+    o.faces.geometry.dispose()
+  }
+
   private clearPartOutlines(): void {
-    for (const o of this.outlines.values()) {
-      this.outlineGroup.remove(o.lines)
-      o.lines.geometry.dispose()
-    }
+    for (const o of this.outlines.values()) this.removeOutline(o)
     this.outlines.clear()
   }
 
@@ -255,6 +268,7 @@ export class ToolpathScene {
     this.clearStock()
     this.clearPartOutlines()
     this.outlineMaterial.dispose()
+    this.outlineFaceMaterial.dispose()
     // Clearing schedules a frame; cancel it so nothing renders into the disposed renderer.
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.frameHandle = null
@@ -339,6 +353,12 @@ export class ToolpathScene {
       const t0 = performance.now()
       this.stockSurface?.updateView(this.camera)
       this.renderer.render(this.scene, this.camera)
+      if (this.outlineGroup.visible && this.outlines.size > 0) {
+        this.renderer.autoClear = false
+        this.renderer.clearDepth()
+        this.renderer.render(this.outlineScene, this.camera)
+        this.renderer.autoClear = true
+      }
       this.lastRenderMs = performance.now() - t0
     })
   }
