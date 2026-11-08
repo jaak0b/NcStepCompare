@@ -29,9 +29,12 @@ const GROUP: Record<FindingKind, { title: string; note: string }> = {
   },
   engagement: {
     title: 'Engagement above the tool limits',
-    note: 'Width or depth of cut above the limits in the tool table. Consecutive moves are merged into one finding.',
+    note: 'Width or depth of cut above the limits in the tool table, one row per toolpath. Select a row to see its worst move. Thread mills and drills are not checked.',
   },
-  plunge: { title: 'Plunges', note: 'An end mill fed straight down into stock. Drills, V-bits and thread mills are not checked.' },
+  plunge: {
+    title: 'Plunges at the cutting feed',
+    note: 'An end mill fed straight down into stock at the toolpath cutting feed or faster, one row per toolpath. Plunges at a lower feed are not listed.',
+  },
   thread: {
     title: 'Threads',
     note: 'Holes cut wider than the model by a thread mill. They are expected for threaded holes and are not gouges.',
@@ -50,7 +53,17 @@ const groups = computed(() =>
   FINDING_KINDS.map((kind) => ({ kind, items: props.findings.filter((f) => f.kind === kind) })).filter((g) => g.items.length > 0),
 )
 
-const toolpathName = (n: number | null) => (n === null ? null : (props.toolpaths.find((t) => t.number === n)?.name ?? null))
+const toolpathNames = computed(() => new Map(props.toolpaths.map((t) => [t.number, t.name])))
+const toolpathName = (n: number | null) => (n === null ? null : (toolpathNames.value.get(n) ?? null))
+
+/** Stable key per finding object, so list rows keep their identity when the list changes. */
+const keys = new WeakMap<Finding, number>()
+let nextKey = 1
+function keyOf(f: Finding): number {
+  let k = keys.get(f)
+  if (k === undefined) keys.set(f, (k = nextKey++))
+  return k
+}
 
 const basisLabel = (b: ValueBasis) => (b === 'measured' || b === 'calculated' ? b : SOURCE_LABEL[b])
 
@@ -73,15 +86,17 @@ function toggle(f: Finding) {
     <p class="note">Select a finding to show it in the view. A finding from a move also sets playback to after that move.</p>
     <p v-if="!compared" class="note">Place a STEP part to check for gouges, threads and leftover material.</p>
     <p v-else-if="comparisonRunning" class="note">Comparing the stock with the placed parts.</p>
-    <p v-if="groups.length === 0" class="note">No findings.</p>
+    <p v-if="groups.length === 0 && compared && !comparisonRunning" class="note">No findings.</p>
+    <p v-else-if="groups.length === 0 && !compared" class="note">No findings from the moves.</p>
     <details v-for="g in groups" :key="g.kind" :open="FINDING_SEVERITY[g.kind] !== 'info'" class="group">
       <summary>
         <span class="severity" :class="FINDING_SEVERITY[g.kind]">{{ SEVERITY_LABEL[FINDING_SEVERITY[g.kind]] }}</span>
         {{ GROUP[g.kind].title }} ({{ g.items.length }})
       </summary>
       <p class="note">{{ GROUP[g.kind].note }}</p>
+      <p v-if="g.kind === 'thread'" class="note">Drawn in purple in the view.</p>
       <ul>
-        <li v-for="(f, n) in shown(g.kind, g.items)" :key="n" :class="{ selected: f === selected }">
+        <li v-for="f in shown(g.kind, g.items)" :key="keyOf(f)" :class="{ selected: f === selected }">
           <button type="button" @click="toggle(f)">
             <span v-if="toolpathName(f.toolpath)" class="toolpath">{{ toolpathName(f.toolpath) }}: </span>
             {{ f.rows[0].label }}: {{ f.rows[0].value }}
