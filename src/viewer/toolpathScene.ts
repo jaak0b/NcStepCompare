@@ -12,6 +12,9 @@ const CUTTING_COLOR = 0x1f6fd1
 const RAPID_COLOR = 0xe8590c
 const STOCK_COLOR = 0x6b7280
 const TOOL_MARKER_COLOR = 0xd9a400
+const PART_OUTLINE_COLOR = 0x1d2733
+/** Faces meeting at a smaller angle than this (degrees) share no outline edge. */
+const OUTLINE_CREASE_ANGLE = 20
 
 export interface ToolMarker {
   tip: { x: number; y: number; z: number }
@@ -39,6 +42,14 @@ export class ToolpathScene {
     opacity: 0.6,
   })
   private readonly axes = new THREE.AxesHelper(10)
+  private readonly outlineGroup = new THREE.Group()
+  // Drawn through the stock so the part placement can be checked before anything is cut.
+  private readonly outlineMaterial = new THREE.LineBasicMaterial({
+    color: PART_OUTLINE_COLOR,
+    transparent: true,
+    opacity: 0.55,
+    depthTest: false,
+  })
   private stockSurface: StockSurface | null = null
   /** CPU time of the last renderer.render call in ms, measured (GPU work runs after it). */
   lastRenderMs = 0
@@ -76,7 +87,8 @@ export class ToolpathScene {
     )
     this.toolMarker.visible = false
 
-    this.scene.add(this.axes, this.jobGroup, this.toolMarker)
+    this.outlineGroup.renderOrder = 1
+    this.scene.add(this.axes, this.jobGroup, this.toolMarker, this.outlineGroup)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
@@ -159,6 +171,38 @@ export class ToolpathScene {
     this.requestRender()
   }
 
+  /** Colours the stock by the comparison limits (see StockSurface.setLimits), or plain for null. */
+  setStockLimits(limits: Float32Array | null): void {
+    this.stockSurface?.setLimits(limits)
+    this.requestRender()
+  }
+
+  /** Shows the feature edges of each placed part (work coordinates). */
+  setPartOutlines(parts: { positions: Float32Array; indices: Uint32Array }[]): void {
+    this.clearPartOutlines()
+    for (const p of parts) {
+      const mesh = new THREE.BufferGeometry()
+      mesh.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
+      mesh.setIndex(new THREE.BufferAttribute(p.indices, 1))
+      const edges = new THREE.EdgesGeometry(mesh, OUTLINE_CREASE_ANGLE)
+      mesh.dispose()
+      this.outlineGroup.add(new THREE.LineSegments(edges, this.outlineMaterial))
+    }
+    this.requestRender()
+  }
+
+  setPartOutlinesVisible(visible: boolean): void {
+    this.outlineGroup.visible = visible
+    this.requestRender()
+  }
+
+  private clearPartOutlines(): void {
+    for (const child of [...this.outlineGroup.children]) {
+      this.outlineGroup.remove(child)
+      if (child instanceof THREE.LineSegments) child.geometry.dispose()
+    }
+  }
+
   clearStock(): void {
     this.stockSurface?.dispose()
     this.stockSurface = null
@@ -191,6 +235,8 @@ export class ToolpathScene {
     this.resizeObserver.disconnect()
     this.clearJob()
     this.clearStock()
+    this.clearPartOutlines()
+    this.outlineMaterial.dispose()
     // Clearing schedules a frame; cancel it so nothing renders into the disposed renderer.
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.frameHandle = null

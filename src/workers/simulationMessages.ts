@@ -1,4 +1,7 @@
+import type { DeviationSummary, OrientationCandidate, Tolerances } from '../engine/deviation'
+import type { PartPlacement } from '../engine/partPlacement'
 import type { CellRect, SimulationMoves } from '../engine/simulation'
+import type { TriangleMesh } from '../engine/stepModel'
 import type { Box3D } from '../engine/stock'
 import type { CutterShape } from '../engine/toolShape'
 
@@ -21,6 +24,22 @@ export interface SimulationFrame {
   data: Float32Array
   /** Time the worker spent on this frame (seek and copy), measured. */
   workerMs: number
+  /** Deviation of the shown stock from the placed parts, or null with no parts placed. */
+  deviation: DeviationSummary | null
+}
+
+/** Placed parts compared with the stock. */
+export interface ComparisonResult {
+  type: 'comparison'
+  /**
+   * Per cell, interleaved: the height below which the stock is a gouge, and the height above which
+   * it is leftover. NaN outside every part outline; -Infinity where no gouge is possible.
+   */
+  limits: Float32Array
+  /** Deviation at the stock state shown when the comparison was made. */
+  deviation: DeviationSummary | null
+  rasterizeMs: number
+  limitsMs: number
 }
 
 export type SimulationRequest =
@@ -32,6 +51,13 @@ export type SimulationRequest =
       tools: { number: number; shape: CutterShape }[]
     }
   | { type: 'seek'; moveIndex: number }
+  | { type: 'compare'; parts: { positions: Float32Array; indices: Uint32Array }[]; tolerances: Tolerances }
+  | {
+      type: 'autoOrient'
+      requestId: number
+      mesh: TriangleMesh
+      at: Pick<PartPlacement, 'centerX' | 'centerY' | 'bottomZ'>
+    }
 
 export interface SimulationReady {
   type: 'ready'
@@ -53,4 +79,6 @@ export type SimulationResponse =
   | { type: 'progress'; done: number; total: number }
   | SimulationReady
   | { type: 'frame'; frame: SimulationFrame }
-  | { type: 'error'; message: string }
+  | ComparisonResult
+  | { type: 'orientations'; requestId: number; candidates: OrientationCandidate[]; ms: number }
+  | { type: 'error'; message: string; during: 'simulation' | 'comparison' | 'autoOrient' }

@@ -17,12 +17,20 @@
 // face carries a polygon offset (depth only, the drawn heights are unchanged) and wins that tie.
 //
 // Playback uploads only the changed rectangle of cells into the texture.
+//
+// With STEP parts placed, a second texture holds two heights per cell from the comparison: below the
+// first the cell is a gouge, above the second it is leftover. The fragment shader compares the shown
+// machined height of its cell with them, so the deviation colours follow playback with no extra work.
+// Cells outside every part outline stay plain stock grey.
 import * as THREE from 'three'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
 
 const TILE = 128
 const STOCK_COLOR = new THREE.Color(0xb8bcc2)
+/** Texture stand-ins for values a float texture lookup should not carry. */
+const OUTSIDE_PARTS = 1e30
+const NO_LIMIT = -1e30
 
 const COMMON = /* glsl */ `
 uniform highp sampler2D uHeights;
@@ -48,6 +56,7 @@ ${COMMON}
 in vec2 aTile;
 out vec3 vWorld;
 out float vHeight;
+out vec2 vXY;
 
 void main() {
   ivec2 v = min(ivec2(position.xy + aTile), uGridSize + 1);
@@ -58,7 +67,8 @@ void main() {
 #else
   float z = h;
 #endif
-  vec4 world = modelMatrix * vec4(vertexXY(v), z, 1.0);
+  vXY = vertexXY(v);
+  vec4 world = modelMatrix * vec4(vXY, z, 1.0);
   vWorld = world.xyz;
   gl_Position = projectionMatrix * viewMatrix * world;
 }
@@ -70,39 +80,67 @@ in vec2 aVertex;
 in float aBottom;
 out vec3 vWorld;
 out float vHeight;
+out vec2 vXY;
 
 void main() {
   ivec2 v = ivec2(aVertex);
   float top = max(vertexHeight(v), uBottom);
   float z = aBottom > 0.5 ? uBottom : top;
   vHeight = z;
-  vec4 world = modelMatrix * vec4(vertexXY(v), z, 1.0);
+  vXY = vertexXY(v);
+  vec4 world = modelMatrix * vec4(vXY, z, 1.0);
   vWorld = world.xyz;
   gl_Position = projectionMatrix * viewMatrix * world;
 }
 `
 
 const FRAGMENT = /* glsl */ `
+uniform highp sampler2D uHeights;
+uniform highp sampler2D uLimits;
+uniform bool uCompare;
+uniform ivec2 uGridSize;
+uniform float uCellSize;
+uniform vec2 uOrigin;
 uniform float uBottom;
 uniform vec3 uColor;
+uniform vec3 uGougeColor;
+uniform vec3 uLeftoverColor;
+uniform vec3 uWithinColor;
 in vec3 vWorld;
 in float vHeight;
+in vec2 vXY;
 out vec4 fragColor;
 
 void main() {
 #ifndef SKIRT
   if (vHeight <= uBottom) discard;
 #endif
+  vec3 color = uColor;
+#if !defined(SKIRT) && !defined(BOTTOM_FACE)
+  if (uCompare) {
+    ivec2 c = clamp(ivec2(floor((vXY - uOrigin) / uCellSize)), ivec2(0), uGridSize - 1);
+    vec2 limit = texelFetch(uLimits, c, 0).rg;
+    // Outside every part the texture holds 1e30 (OUTSIDE_PARTS).
+    if (limit.g < 1e29) {
+      float h = texelFetch(uHeights, c, 0).r;
+      color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
+    }
+  }
+#endif
   vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (dot(n, cameraPosition - vWorld) < 0.0) n = -n;
   vec3 light = normalize(vec3(0.35, -0.55, 1.0));
   float diffuse = max(dot(n, light), 0.0);
-  fragColor = vec4(uColor * (0.42 + 0.58 * diffuse), 1.0);
+  fragColor = vec4(color * (0.42 + 0.58 * diffuse), 1.0);
 }
 `
 
+/** Deviation colours, shared with the legend. */
+export const DEVIATION_COLORS = { gouge: '#d63c3c', leftover: '#2f66d0', within: '#8fc48a' }
+
 export class StockSurface {
   private readonly texture: THREE.DataTexture
+  private limitsTexture: THREE.DataTexture
   private readonly surface: THREE.Mesh
   private readonly skirt: THREE.Mesh
   private readonly bottomFace: THREE.Mesh
@@ -121,8 +159,14 @@ export class StockSurface {
     this.texture.generateMipmaps = false
     this.texture.needsUpdate = true
 
+    this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array([OUTSIDE_PARTS, OUTSIDE_PARTS]), 1, 1)
     this.uniforms = {
       uHeights: { value: this.texture },
+      uLimits: { value: this.limitsTexture },
+      uCompare: { value: false },
+      uGougeColor: { value: new THREE.Color(DEVIATION_COLORS.gouge) },
+      uLeftoverColor: { value: new THREE.Color(DEVIATION_COLORS.leftover) },
+      uWithinColor: { value: new THREE.Color(DEVIATION_COLORS.within) },
       uGridSize: { value: new THREE.Vector2(nx, ny) },
       uCellSize: { value: grid.cellSize },
       uOrigin: { value: new THREE.Vector2(grid.originX, grid.originY) },
@@ -161,6 +205,36 @@ export class StockSurface {
     patch.dispose()
   }
 
+  /**
+   * Shows the comparison: per cell, interleaved, the gouge and leftover limit heights (NaN outside
+   * the parts, -Infinity for no gouge limit). Null shows plain stock.
+   */
+  setLimits(limits: Float32Array | null): void {
+    this.limitsTexture.dispose()
+    if (!limits) {
+      this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array([OUTSIDE_PARTS, OUTSIDE_PARTS]), 1, 1)
+      this.uniforms.uCompare.value = false
+    } else {
+      const data = new Float32Array(limits.length)
+      for (let k = 0; k < limits.length; k++) {
+        const v = limits[k]
+        data[k] = Number.isNaN(v) ? OUTSIDE_PARTS : v === -Infinity ? NO_LIMIT : v
+      }
+      this.limitsTexture = StockSurface.limitsTextureFrom(data, this.grid.nx, this.grid.ny)
+      this.uniforms.uCompare.value = true
+    }
+    this.uniforms.uLimits.value = this.limitsTexture
+  }
+
+  private static limitsTextureFrom(data: Float32Array, w: number, h: number): THREE.DataTexture {
+    const t = new THREE.DataTexture(data, w, h, THREE.RGFormat, THREE.FloatType)
+    t.minFilter = THREE.NearestFilter
+    t.magFilter = THREE.NearestFilter
+    t.generateMipmaps = false
+    t.needsUpdate = true
+    return t
+  }
+
   dispose(): void {
     this.parent.remove(this.surface, this.bottomFace, this.skirt)
     for (const mesh of [this.surface, this.bottomFace, this.skirt]) {
@@ -168,6 +242,7 @@ export class StockSurface {
       ;(mesh.material as THREE.Material).dispose()
     }
     this.texture.dispose()
+    this.limitsTexture.dispose()
   }
 
   private material(vertexShader: string, defines: Record<string, number>, side: THREE.Side): THREE.ShaderMaterial {

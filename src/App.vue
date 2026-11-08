@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import ComparisonPanel from './components/ComparisonPanel.vue'
 import JobSummary from './components/JobSummary.vue'
+import PartPanel from './components/PartPanel.vue'
 import PlaybackControls from './components/PlaybackControls.vue'
 import SimulationPanel from './components/SimulationPanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
-import { DEFAULT_CELL_SIZE_MM, cellSizeProblem } from './engine/heightGrid'
+import type { DeviationSummary, OrientationCandidate } from './engine/deviation'
+import { cellSizeProblem } from './engine/heightGrid'
 import { NO_TOOLPATH } from './engine/moveList'
+import { defaultPlacement, placePositions, type PartPlacement } from './engine/partPlacement'
 import { simulationStock } from './engine/stock'
+import { meshBounds, type StepPart } from './engine/stepModel'
 import { buildToolTable, type ToolSetup } from './engine/toolTable'
+import { useJobSetupStore } from './stores/jobSetup'
+import { readStepInWorker } from './workers/stepMessages'
 import { parseFileInWorker, type LoadedJob } from './workers/parseMessages'
 import { SimulationClient } from './workers/simulationClient'
 import type { ToolMarker } from './viewer/toolpathScene'
@@ -21,9 +28,26 @@ const error = ref<string | null>(null)
 const hiddenToolpaths = ref(new Set<number>())
 const rapidsVisible = ref(true)
 
-const tools = shallowRef<ToolSetup[]>([])
-const cellSize = ref(DEFAULT_CELL_SIZE_MM)
-const cellSizeSource = ref<'assumed' | 'user'>('assumed')
+const setup = useJobSetupStore()
+const tools = computed(() => setup.tools)
+const cellSize = computed(() => setup.cellSize)
+
+const stepParts = shallowRef<StepPart[]>([])
+const stepLoading = ref(false)
+const stepError = ref<string | null>(null)
+interface OrientState {
+  running: boolean
+  candidates: OrientationCandidate[] | null
+  ms: number | null
+  error: string | null
+}
+const orientStates = ref<Record<string, OrientState>>({})
+const orientRequests = new Map<number, string>()
+let nextOrientRequest = 1
+const deviation = shallowRef<DeviationSummary | null>(null)
+const comparisonTiming = ref<{ rasterizeMs: number; limitsMs: number } | null>(null)
+const comparisonRunning = ref(false)
+const comparisonError = ref<string | null>(null)
 
 const simClient = new SimulationClient()
 const simStatus = ref<'idle' | 'running' | 'ready' | 'error'>('idle')
@@ -94,6 +118,8 @@ function resetSimulation() {
   frameTiming.value = null
   playIndex.value = 0
   shownIndex.value = 0
+  deviation.value = null
+  comparisonRunning.value = false
   viewer.value?.clearStock()
 }
 
@@ -128,6 +154,7 @@ function startSimulation() {
       onFrame: (f) => {
         viewer.value?.applyStockRect(f.rect, f.data)
         shownIndex.value = f.moveIndex
+        if (f.deviation) deviation.value = f.deviation
         const requestToShownMs = performance.now() - seekRequestedAt
         // The render call runs on the next animation frame; read its time then.
         requestAnimationFrame(() => {
@@ -138,12 +165,120 @@ function startSimulation() {
           }
         })
       },
+      onComparison: (r) => {
+        viewer.value?.setStockLimits(r.limits)
+        deviation.value = r.deviation
+        comparisonTiming.value = { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs }
+        comparisonRunning.value = false
+        comparisonError.value = null
+      },
+      onOrientations: (requestId, candidates, ms) => {
+        const fileName = orientRequests.get(requestId)
+        orientRequests.delete(requestId)
+        if (!fileName) return
+        orientStates.value[fileName] = { running: false, candidates, ms, error: null }
+        const current = setup.placementFor(fileName)
+        if (current && candidates.length > 0) {
+          setup.setPlacement(fileName, {
+            ...current,
+            upAxis: candidates[0].upAxis,
+            quarterTurns: candidates[0].quarterTurns,
+          })
+        }
+      },
       onError: (message) => {
         simError.value = message
         simStatus.value = 'error'
       },
+      onComparisonError: (message, during) => {
+        if (during === 'comparison') {
+          comparisonError.value = message
+          comparisonRunning.value = false
+          return
+        }
+        for (const [id, fileName] of orientRequests) {
+          orientStates.value[fileName] = { running: false, candidates: null, ms: null, error: message }
+          orientRequests.delete(id)
+        }
+      },
     },
   )
+}
+
+/** Each loaded part placed in work coordinates. */
+const placedParts = computed(() =>
+  stepParts.value.flatMap((part) => {
+    const placement = setup.placementFor(part.fileName)
+    if (!placement) return []
+    const positions = placePositions(part.mesh, placement)
+    return [{ part, placement, positions, indices: part.mesh.indices, bounds: meshBounds(positions) }]
+  }),
+)
+
+/** Saved placements whose STEP file has not been picked again since the reload. */
+const waitingParts = computed(() =>
+  setup.parts.filter((p) => !stepParts.value.some((s) => s.fileName === p.fileName)),
+)
+
+watch(placedParts, (parts) => viewer.value?.setPartOutlines(parts))
+
+watch([placedParts, () => setup.tolerances, simStatus], ([parts, tolerances, status]) => {
+  if (status !== 'ready') return
+  if (parts.length === 0) {
+    viewer.value?.setStockLimits(null)
+    deviation.value = null
+    comparisonTiming.value = null
+    return
+  }
+  comparisonRunning.value = true
+  simClient.compare(parts, tolerances)
+})
+
+async function onStepChosen(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = [...(input.files ?? [])]
+  input.value = ''
+  const box = stockBox.value
+  if (files.length === 0 || !box) return
+  stepLoading.value = true
+  stepError.value = null
+  const problems: string[] = []
+  for (const file of files) {
+    try {
+      const part = await readStepInWorker(file)
+      if (!setup.placementFor(part.fileName)) setup.setPlacement(part.fileName, defaultPlacement(box))
+      stepParts.value = [...stepParts.value.filter((p) => p.fileName !== part.fileName), part]
+      delete orientStates.value[part.fileName]
+    } catch (err) {
+      problems.push(`Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  stepError.value = problems.length > 0 ? problems.join(' ') : null
+  stepLoading.value = false
+}
+
+function onPlacement(fileName: string, placement: PartPlacement) {
+  setup.setPlacement(fileName, placement)
+}
+
+function removePart(fileName: string) {
+  stepParts.value = stepParts.value.filter((p) => p.fileName !== fileName)
+  setup.removePart(fileName)
+  delete orientStates.value[fileName]
+}
+
+function autoOrient(fileName: string) {
+  const part = stepParts.value.find((p) => p.fileName === fileName)
+  const placement = setup.placementFor(fileName)
+  if (!part || !placement || simStatus.value !== 'ready') return
+  const id = nextOrientRequest++
+  orientRequests.set(id, fileName)
+  orientStates.value[fileName] = { running: true, candidates: null, ms: null, error: null }
+  simClient.autoOrient(id, part.mesh, placement)
+}
+
+function orientState(fileName: string): OrientState {
+  return orientStates.value[fileName] ?? { running: false, candidates: null, ms: null, error: null }
 }
 
 function seek(index: number) {
@@ -167,7 +302,7 @@ async function onFileChosen(event: Event) {
     hiddenToolpaths.value = new Set()
     loaded.value = result
     const used = [...new Set(result.summary.toolpaths.flatMap((t) => t.toolsUsed))]
-    tools.value = buildToolTable(result.job.header.tools, used)
+    setup.applyLoadedJob(file.name, buildToolTable(result.job.header.tools, used))
     startSimulation()
   } catch (err) {
     error.value = `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -178,13 +313,13 @@ async function onFileChosen(event: Event) {
 }
 
 function onToolsEdited(next: ToolSetup[]) {
-  tools.value = next
+  setup.tools = next
   startSimulation()
 }
 
 function onCellSize(value: number) {
-  cellSize.value = value
-  cellSizeSource.value = 'user'
+  setup.cellSize = value
+  setup.cellSizeSource = 'user'
   startSimulation()
 }
 
@@ -213,6 +348,7 @@ function setAllToolpaths(visible: boolean) {
         </label>
         <p v-if="loading" class="status">Reading and parsing the file.</p>
         <p v-if="error" class="error">{{ error }}</p>
+        <p v-if="setup.storageProblem" class="error">{{ setup.storageProblem }}</p>
       </header>
       <template v-if="loaded">
         <SimulationPanel
@@ -222,10 +358,56 @@ function setAllToolpaths(visible: boolean) {
           :error="simError"
           :stock-source="stock?.source ?? null"
           :cell-size="cellSize"
-          :cell-size-source="cellSizeSource"
+          :cell-size-source="setup.cellSizeSource"
           :cell-size-problem="cellSizeError"
           :frame-timing="frameTiming"
           @update:cell-size="onCellSize"
+        />
+        <section>
+          <h2>STEP parts</h2>
+          <label class="file">
+            Add STEP files (.step, .stp)
+            <input
+              type="file"
+              accept=".step,.stp"
+              multiple
+              :disabled="stepLoading || !stockBox"
+              @change="onStepChosen"
+            />
+          </label>
+          <p v-if="!stockBox" class="status">Available once the job has a stock.</p>
+          <p v-if="stepLoading" class="status">Reading the STEP files.</p>
+          <p v-if="stepError" class="error">{{ stepError }}</p>
+          <p v-for="w in waitingParts" :key="w.fileName" class="status">
+            Pick {{ w.fileName }} again to use its saved placement.
+            <button type="button" @click="setup.removePart(w.fileName)">Forget</button>
+          </p>
+          <PartPanel
+            v-for="p in placedParts"
+            :key="p.part.fileName"
+            :part="p.part"
+            :placement="p.placement"
+            :placed-bounds="p.bounds"
+            :auto-orient-blocked="simStatus === 'ready' ? null : 'Available once the simulation has finished.'"
+            :orient="orientState(p.part.fileName)"
+            @update:placement="onPlacement(p.part.fileName, $event)"
+            @auto-orient="autoOrient(p.part.fileName)"
+            @remove="removePart(p.part.fileName)"
+          />
+        </section>
+        <ComparisonPanel
+          v-if="placedParts.length > 0"
+          :tolerances="setup.tolerances"
+          :sources="setup.toleranceSources"
+          :cell-size="cellSize"
+          :deviation="deviation"
+          :shown-move="shownIndex"
+          :timing="comparisonTiming"
+          :running="comparisonRunning"
+          :error="comparisonError"
+          :outlines-visible="setup.outlinesVisible"
+          @tolerance="(which, v) => setup.setTolerance(which, v)"
+          @update:outlines-visible="setup.outlinesVisible = $event"
         />
         <ToolTable :tools="tools" @update="onToolsEdited" />
         <JobSummary
@@ -248,6 +430,7 @@ function setAllToolpaths(visible: boolean) {
           :hidden-toolpaths="hiddenToolpaths"
           :rapids-visible="rapidsVisible"
           :tool-marker="toolMarker"
+          :outlines-visible="setup.outlinesVisible"
         />
       </div>
       <PlaybackControls
@@ -291,6 +474,10 @@ h1 {
 }
 .status {
   color: #5b6470;
+}
+h2 {
+  font-size: 13px;
+  margin: 0 0 4px;
 }
 .error {
   color: #b42318;

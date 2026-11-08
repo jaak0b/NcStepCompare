@@ -12,6 +12,7 @@ const props = defineProps<{
   hiddenToolpaths: Set<number>
   rapidsVisible: boolean
   toolMarker: ToolMarker | null
+  outlinesVisible: boolean
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -19,6 +20,7 @@ let scene: ToolpathScene | null = null
 
 onMounted(() => {
   scene = new ToolpathScene(host.value!)
+  scene.setPartOutlinesVisible(props.outlinesVisible)
   showJob()
 })
 
@@ -32,6 +34,7 @@ function showJob() {
   scene.setJob(props.loaded.job.moves, props.stockBox, props.loaded.summary.bounds)
   scene.setHiddenToolpaths(props.hiddenToolpaths)
   scene.setRapidsVisible(props.rapidsVisible)
+  scene.setPartOutlinesVisible(props.outlinesVisible)
   showMarker()
 }
 
@@ -52,8 +55,14 @@ defineExpose({
   setStockGrid: (grid: GridInfo, heights: Float32Array) => scene?.setStockGrid(grid, heights),
   applyStockRect: (rect: CellRect, data: Float32Array) => scene?.applyStockRect(rect, data),
   clearStock: () => scene?.clearStock(),
+  setStockLimits: (limits: Float32Array | null) => scene?.setStockLimits(limits),
+  setPartOutlines: (parts: { positions: Float32Array; indices: Uint32Array }[]) => scene?.setPartOutlines(parts),
   lastRenderMs: () => scene?.lastRenderMs ?? 0,
 })
+watch(
+  () => props.outlinesVisible,
+  (v) => scene?.setPartOutlinesVisible(v),
+)
 watch(
   () => props.rapidsVisible,
   (v) => scene?.setRapidsVisible(v),
@@ -68,6 +77,7 @@ watch(
       <span><i class="swatch rapid"></i>Rapid</span>
       <span><i class="swatch stock"></i>Stock</span>
       <span><i class="swatch tool"></i>Tool</span>
+      <span><i class="swatch outline"></i>STEP outline</span>
     </div>
   </div>
 </template>
@@ -112,5 +122,8 @@ watch(
 }
 .tool {
   background: #d9a400;
+}
+.outline {
+  background: #1d2733;
 }
 </style>

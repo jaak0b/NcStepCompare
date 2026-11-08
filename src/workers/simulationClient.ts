@@ -1,15 +1,29 @@
 // Main-thread handle on the simulation worker. Starting a new run terminates the previous worker,
 // which cancels a simulation still in progress.
+import type { OrientationCandidate, Tolerances } from '../engine/deviation'
+import type { PartPlacement } from '../engine/partPlacement'
 import type { MoveList } from '../engine/moveList'
+import type { TriangleMesh } from '../engine/stepModel'
 import type { Box3D } from '../engine/stock'
 import type { CutterShape } from '../engine/toolShape'
-import type { SimulationFrame, SimulationReady, SimulationRequest, SimulationResponse } from './simulationMessages'
+import type {
+  ComparisonResult,
+  SimulationFrame,
+  SimulationReady,
+  SimulationRequest,
+  SimulationResponse,
+} from './simulationMessages'
 
 export interface SimulationHandlers {
   onProgress(done: number, total: number): void
   onReady(result: SimulationReady): void
   onFrame(frame: SimulationFrame): void
+  onComparison(result: ComparisonResult): void
+  onOrientations(requestId: number, candidates: OrientationCandidate[], ms: number): void
+  /** A failed simulation; the stock is gone. */
   onError(message: string): void
+  /** A failed comparison or auto-orient; the simulation is still usable. */
+  onComparisonError(message: string, during: 'comparison' | 'autoOrient'): void
 }
 
 export class SimulationClient {
@@ -31,7 +45,10 @@ export class SimulationClient {
       if (r.type === 'progress') handlers.onProgress(r.done, r.total)
       else if (r.type === 'ready') handlers.onReady(r)
       else if (r.type === 'frame') handlers.onFrame(r.frame)
-      else handlers.onError(r.message)
+      else if (r.type === 'comparison') handlers.onComparison(r)
+      else if (r.type === 'orientations') handlers.onOrientations(r.requestId, r.candidates, r.ms)
+      else if (r.during === 'simulation') handlers.onError(r.message)
+      else handlers.onComparisonError(r.message, r.during)
     }
     worker.onmessageerror = () => {
       if (worker === this.worker) handlers.onError('A message from the simulation worker could not be read.')
@@ -63,6 +80,25 @@ export class SimulationClient {
 
   seek(moveIndex: number): void {
     this.worker?.postMessage({ type: 'seek', moveIndex } satisfies SimulationRequest)
+  }
+
+  /** Compares the stock with parts already placed in work coordinates. Sends copies. */
+  compare(parts: { positions: Float32Array; indices: Uint32Array }[], tolerances: Tolerances): void {
+    if (!this.worker) return
+    const copies = parts.map((p) => ({ positions: p.positions.slice(), indices: p.indices.slice() }))
+    this.worker.postMessage(
+      { type: 'compare', parts: copies, tolerances: { ...tolerances } } satisfies SimulationRequest,
+      copies.flatMap((p) => [p.positions.buffer, p.indices.buffer]) as ArrayBuffer[],
+    )
+  }
+
+  autoOrient(requestId: number, mesh: TriangleMesh, at: Pick<PartPlacement, 'centerX' | 'centerY' | 'bottomZ'>): void {
+    this.worker?.postMessage({
+      type: 'autoOrient',
+      requestId,
+      mesh: { positions: mesh.positions, indices: mesh.indices },
+      at: { centerX: at.centerX, centerY: at.centerY, bottomZ: at.bottomZ },
+    } satisfies SimulationRequest)
   }
 
   stop(): void {
