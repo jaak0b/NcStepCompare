@@ -11,7 +11,10 @@ import { parseDecimalInput } from '../ui/decimalInput'
 import { SOURCE_LABEL } from '../ui/sourceLabel'
 
 const props = defineProps<{ tools: ToolSetup[] }>()
-const emit = defineEmits<{ update: [tools: ToolSetup[]] }>()
+const emit = defineEmits<{ update: [tools: ToolSetup[]]; reset: [number: number] }>()
+
+/** True when the entry carries the user's own values (they are saved for the next job). */
+const hasEdits = (t: ToolSetup) => Object.values(t.sources).some((s) => s === 'user' || s === 'saved')
 
 
 
@@ -53,6 +56,9 @@ function onValue(number: number, field: NumberField, event: Event) {
     <div v-for="t in tools" :key="t.number" class="tool">
       <div class="title">
         <strong>T{{ t.number }}</strong> <span class="name">{{ t.name }}</span>
+        <button v-if="hasEdits(t)" type="button" class="reset" @click="emit('reset', t.number)">
+          Reset to file values
+        </button>
       </div>
       <p v-for="p in toolProblems(t)" :key="p" class="problem">{{ p }}</p>
       <div class="fields">
@@ -120,8 +126,13 @@ h2 {
   font-size: 12px;
   color: #5b6470;
 }
-.source.user {
+.source.user,
+.source.saved {
   color: #1f6fd1;
+}
+.reset {
+  margin-left: 8px;
+  font-size: 12px;
 }
 .source.assumed {
   color: #8a5a00;

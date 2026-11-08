@@ -7,14 +7,16 @@ import PlaybackControls from './components/PlaybackControls.vue'
 import SimulationPanel from './components/SimulationPanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
-import type { DeviationSummary, OrientationCandidate } from './engine/deviation'
-import { cellSizeProblem } from './engine/heightGrid'
+import type { OrientationCandidate } from './engine/autoOrient'
+import { DEFAULT_GOUGE_TOLERANCE_MM, DEFAULT_LEFTOVER_TOLERANCE_MM, type DeviationSummary, type Tolerances } from './engine/deviation'
+import type { SettingSource } from './ui/sourceLabel'
+import { DEFAULT_CELL_SIZE_MM, cellSizeProblem } from './engine/heightGrid'
 import { NO_TOOLPATH } from './engine/moveList'
 import { defaultPlacement, placePositions, type PartPlacement } from './engine/partPlacement'
 import { simulationStock, type Box3D } from './engine/stock'
 import { meshBounds, tessellationDeflection, type StepPart } from './engine/stepModel'
-import { buildToolTable, type ToolSetup } from './engine/toolTable'
-import { useJobSetupStore } from './stores/jobSetup'
+import { buildToolTable, toolEditKey, toolEdits, withSavedEdits, type ToolSetup } from './engine/toolTable'
+import { loadToolEdits, storeToolEdits } from './ui/toolEditStorage'
 import { readStepInWorker } from './workers/stepMessages'
 import { parseFileInWorker, type LoadedJob } from './workers/parseMessages'
 import { SimulationClient } from './workers/simulationClient'
@@ -28,17 +30,69 @@ const error = ref<string | null>(null)
 const hiddenToolpaths = ref(new Set<number>())
 const rapidsVisible = ref(true)
 
-const setup = useJobSetupStore()
-const tools = computed(() => setup.tools)
-const cellSize = computed(() => setup.cellSize)
+const tools = shallowRef<ToolSetup[]>([])
+const savedToolEdits = loadToolEdits()
+let toolEditsByKey = savedToolEdits.edits
+/** Why saved tool edits could not be read or written, or null. */
+const toolEditProblem = ref<string | null>(savedToolEdits.problem)
 
-/** A STEP part loaded in this session; `id` is its entry in the saved setup. */
+/** Tool table built from the loaded file alone, without any edits. */
+function fileToolTable(): ToolSetup[] {
+  const l = loaded.value
+  if (!l) return []
+  const used = [...new Set(l.summary.toolpaths.flatMap((t) => t.toolsUsed))]
+  return buildToolTable(l.job.header.tools, used)
+}
+
+/** Saves the user's values of every tool in the table, and drops saved edits a tool no longer has. */
+function saveToolEdits(next: ToolSetup[]) {
+  const all = { ...toolEditsByKey }
+  for (const t of next) {
+    const e = toolEdits(t)
+    if (Object.keys(e).length > 0) all[toolEditKey(t)] = e
+    else delete all[toolEditKey(t)]
+  }
+  toolEditsByKey = all
+  toolEditProblem.value = storeToolEdits(all)
+}
+const cellSize = ref(DEFAULT_CELL_SIZE_MM)
+const cellSizeSource = ref<SettingSource>('assumed')
+const tolerances = ref<Tolerances>({ gouge: DEFAULT_GOUGE_TOLERANCE_MM, leftover: DEFAULT_LEFTOVER_TOLERANCE_MM })
+const toleranceSources = ref<Record<keyof Tolerances, SettingSource>>({ gouge: 'assumed', leftover: 'assumed' })
+const outlinesVisible = ref(true)
+/** Placement per loaded part id. */
+const placements = ref<Record<string, PartPlacement>>({})
+let nextPartId = 1
+
+const placementOf = (id: string): PartPlacement | null => placements.value[id] ?? null
+
+/** Changes a part's placement; nothing happens when it is unchanged. */
+function setPlacement(id: string, p: PartPlacement) {
+  const old = placements.value[id]
+  if (
+    old &&
+    old.upAxis === p.upAxis &&
+    old.quarterTurns === p.quarterTurns &&
+    old.centerX === p.centerX &&
+    old.centerY === p.centerY &&
+    old.bottomZ === p.bottomZ
+  ) {
+    return
+  }
+  placements.value = { ...placements.value, [id]: { ...p } }
+}
+
+function setTolerance(which: keyof Tolerances, value: number) {
+  if (tolerances.value[which] === value) return
+  tolerances.value = { ...tolerances.value, [which]: value }
+  toleranceSources.value = { ...toleranceSources.value, [which]: 'user' }
+}
+
+/** A loaded STEP part. Several parts may come from files with the same name. */
 interface LoadedPart {
   id: string
   file: File
   part: StepPart
-  /** True when the placement came from the saved setup instead of the defaults. */
-  restored: boolean
 }
 const stepParts = shallowRef<LoadedPart[]>([])
 const stepLoading = ref(false)
@@ -195,12 +249,15 @@ function startSimulation() {
         orientRequests.delete(requestId)
         if (!id) return
         orientStates.value[id] = { running: false, candidates, ms, error: null }
-        const current = setup.placementOf(id)
+        const current = placementOf(id)
         if (current && candidates.length > 0) {
-          setup.setPlacement(id, {
+          const best = candidates[0]
+          setPlacement(id, {
             ...current,
-            upAxis: candidates[0].upAxis,
-            quarterTurns: candidates[0].quarterTurns,
+            upAxis: best.upAxis,
+            quarterTurns: best.quarterTurns,
+            centerX: Number(best.centerX.toFixed(6)),
+            centerY: Number(best.centerY.toFixed(6)),
           })
         }
       },
@@ -243,7 +300,7 @@ const placementKey = (p: PartPlacement) => `${p.upAxis}|${p.quarterTurns}|${p.ce
 const placedParts = computed<PlacedPart[]>(() => {
   const out: PlacedPart[] = []
   for (const loaded of stepParts.value) {
-    const placement = setup.placementOf(loaded.id)
+    const placement = placementOf(loaded.id)
     if (!placement) continue
     const cached = placedCache.get(loaded.id)
     if (cached && cached.loaded.part === loaded.part && placementKey(cached.placement) === placementKey(placement)) {
@@ -262,17 +319,13 @@ const placedParts = computed<PlacedPart[]>(() => {
 const sameParts = (a: PlacedPart[], b: PlacedPart[] | undefined) =>
   !!b && a.length === b.length && a.every((p, k) => p === b[k])
 
-/** Saved parts of this job whose STEP file has not been picked again since the reload. */
-const waitingParts = computed(() =>
-  setup.parts.filter((p) => p.ncFileName === setup.ncFileName && !stepParts.value.some((s) => s.id === p.id)),
-)
 
 function requestCompare() {
   if (simStatus.value !== 'ready') return
   latestCompare++
   comparisonRunning.value = placedParts.value.length > 0
   comparisonError.value = null
-  simClient.compare(latestCompare, placedParts.value, setup.tolerances)
+  simClient.compare(latestCompare, placedParts.value, tolerances.value)
 }
 
 watch(placedParts, (parts, before) => {
@@ -281,7 +334,7 @@ watch(placedParts, (parts, before) => {
   requestCompare()
 })
 watch(
-  () => `${setup.tolerances.gouge}|${setup.tolerances.leftover}`,
+  () => `${tolerances.value.gouge}|${tolerances.value.leftover}`,
   () => requestCompare(),
 )
 watch(simStatus, (status) => {
@@ -289,7 +342,7 @@ watch(simStatus, (status) => {
 })
 
 /** Tessellation chord deviation for the current tolerances. */
-const deflection = computed(() => tessellationDeflection(setup.tolerances))
+const deflection = computed(() => tessellationDeflection(tolerances.value))
 
 // A tolerance change that changes the deflection re-reads the loaded STEP files.
 watch(deflection, async (d) => {
@@ -316,10 +369,9 @@ async function onStepChosen(event: Event) {
   for (const file of files) {
     try {
       const part = await readStepInWorker(file, deflection.value)
-      const inUse = new Set(stepParts.value.map((p) => p.id))
-      const saved = setup.findSaved(file.name, file.size, inUse)
-      const id = saved?.id ?? setup.addPart(file.name, file.size, defaultPlacement(box))
-      stepParts.value = [...stepParts.value, { id, file, part, restored: !!saved }]
+      const id = String(nextPartId++)
+      setPlacement(id, defaultPlacement(box))
+      stepParts.value = [...stepParts.value, { id, file, part }]
     } catch (err) {
       problems.push(`Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -329,18 +381,19 @@ async function onStepChosen(event: Event) {
 }
 
 function onPlacement(id: string, placement: PartPlacement) {
-  setup.setPlacement(id, placement)
+  setPlacement(id, placement)
 }
 
 function removePart(id: string) {
   stepParts.value = stepParts.value.filter((p) => p.id !== id)
-  setup.removePart(id)
+  const { [id]: _removed, ...rest } = placements.value
+  placements.value = rest
   delete orientStates.value[id]
 }
 
 function autoOrient(id: string) {
   const loaded = stepParts.value.find((p) => p.id === id)
-  const placement = setup.placementOf(id)
+  const placement = placementOf(id)
   if (!loaded || !placement || simStatus.value !== 'ready') return
   const requestId = nextOrientRequest++
   orientRequests.set(requestId, id)
@@ -372,13 +425,10 @@ async function onFileChosen(event: Event) {
     const result = await parseFileInWorker(file)
     hiddenToolpaths.value = new Set()
     loaded.value = result
-    const used = [...new Set(result.summary.toolpaths.flatMap((t) => t.toolsUsed))]
-    // Parts belong to a job: another .nc file starts without the parts loaded for this one.
-    if (file.name !== setup.ncFileName) {
-      stepParts.value = []
-      orientStates.value = {}
-    }
-    setup.applyLoadedJob(file.name, buildToolTable(result.job.header.tools, used))
+    tools.value = fileToolTable().map((t) => {
+      const saved = toolEditsByKey[toolEditKey(t)]
+      return saved ? withSavedEdits(t, saved) : t
+    })
     startSimulation()
   } catch (err) {
     error.value = `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -389,13 +439,24 @@ async function onFileChosen(event: Event) {
 }
 
 function onToolsEdited(next: ToolSetup[]) {
-  setup.tools = next
+  tools.value = next
+  saveToolEdits(next)
+  startSimulation()
+}
+
+/** Deletes a tool's saved edits and goes back to the values from the file. */
+function resetTool(number: number) {
+  const fromFile = fileToolTable().find((t) => t.number === number)
+  if (!fromFile) return
+  const next = tools.value.map((t) => (t.number === number ? fromFile : t))
+  tools.value = next
+  saveToolEdits(next)
   startSimulation()
 }
 
 function onCellSize(value: number) {
-  setup.cellSize = value
-  setup.cellSizeSource = 'user'
+  cellSize.value = value
+  cellSizeSource.value = 'user'
   startSimulation()
 }
 
@@ -424,7 +485,7 @@ function setAllToolpaths(visible: boolean) {
         </label>
         <p v-if="loading" class="status">Reading and parsing the file.</p>
         <p v-if="error" class="error">{{ error }}</p>
-        <p v-if="setup.storageProblem" class="error">{{ setup.storageProblem }}</p>
+        <p v-if="toolEditProblem" class="error">{{ toolEditProblem }}</p>
       </header>
       <template v-if="loaded">
         <SimulationPanel
@@ -434,7 +495,7 @@ function setAllToolpaths(visible: boolean) {
           :error="simError"
           :stock-source="stock?.source ?? null"
           :cell-size="cellSize"
-          :cell-size-source="setup.cellSizeSource"
+          :cell-size-source="cellSizeSource"
           :cell-size-problem="cellSizeError"
           :frame-timing="frameTiming"
           @update:cell-size="onCellSize"
@@ -454,15 +515,10 @@ function setAllToolpaths(visible: boolean) {
           <p v-if="!stockBox" class="status">Available once the job has a stock.</p>
           <p v-if="stepLoading" class="status">Reading the STEP files.</p>
           <p v-if="stepError" class="error">{{ stepError }}</p>
-          <p v-for="w in waitingParts" :key="w.id" class="status">
-            Pick {{ w.fileName }} again to use its saved placement.
-            <button type="button" @click="setup.removePart(w.id)">Forget</button>
-          </p>
           <PartPanel
             v-for="p in placedParts"
             :key="p.id"
             :part="p.loaded.part"
-            :restored="p.loaded.restored"
             :placement="p.placement"
             :placed-bounds="p.bounds"
             :auto-orient-blocked="simStatus === 'ready' ? null : 'Available once the simulation has finished.'"
@@ -474,8 +530,8 @@ function setAllToolpaths(visible: boolean) {
         </section>
         <ComparisonPanel
           v-if="placedParts.length > 0"
-          :tolerances="setup.tolerances"
-          :sources="setup.toleranceSources"
+          :tolerances="tolerances"
+          :sources="toleranceSources"
           :cell-size="cellSize"
           :deviation="deviation"
           :shown-move="shownIndex"
@@ -483,11 +539,11 @@ function setAllToolpaths(visible: boolean) {
           :deflection="deflection"
           :running="comparisonRunning"
           :error="comparisonError"
-          :outlines-visible="setup.outlinesVisible"
-          @tolerance="(which, v) => setup.setTolerance(which, v)"
-          @update:outlines-visible="setup.outlinesVisible = $event"
+          :outlines-visible="outlinesVisible"
+          @tolerance="setTolerance"
+          @update:outlines-visible="outlinesVisible = $event"
         />
-        <ToolTable :tools="tools" @update="onToolsEdited" />
+        <ToolTable :tools="tools" @update="onToolsEdited" @reset="resetTool" />
         <JobSummary
           v-model:rapids-visible="rapidsVisible"
           :loaded="loaded"
@@ -508,7 +564,7 @@ function setAllToolpaths(visible: boolean) {
           :hidden-toolpaths="hiddenToolpaths"
           :rapids-visible="rapidsVisible"
           :tool-marker="toolMarker"
-          :outlines-visible="setup.outlinesVisible"
+          :outlines-visible="outlinesVisible"
         />
       </div>
       <PlaybackControls

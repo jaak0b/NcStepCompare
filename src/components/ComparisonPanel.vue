@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { toleranceBelowCellSize, type DeviationSummary, type Tolerances } from '../engine/deviation'
-import type { SettingSource } from '../stores/jobSetup'
 import { parseDecimalInput } from '../ui/decimalInput'
-import { SOURCE_LABEL } from '../ui/sourceLabel'
+import { SOURCE_LABEL, type SettingSource } from '../ui/sourceLabel'
 import { DEVIATION_COLORS } from '../viewer/stockSurface'
 
 const props = defineProps<{

@@ -3,7 +3,8 @@
 import type { ToolDefinition, ToolKind } from './makeraHeader'
 import { cutterProfile, type CutterShape, type CutterShapeKind } from './toolShape'
 
-export type ValueSource = 'header' | 'user' | 'assumed' | 'missing'
+/** 'saved': a user entry from an earlier session, applied again (still a user entry). */
+export type ValueSource = 'header' | 'user' | 'saved' | 'assumed' | 'missing'
 
 export type ToolField = 'kind' | 'diameter' | 'cornerRadius' | 'tipAngle' | 'fluteLength' | 'shoulderLength'
 
@@ -106,7 +107,7 @@ export function defaultTipAngle(kind: CutterShapeKind): number | null {
 export function withToolKind(t: ToolSetup, kind: CutterShapeKind): ToolSetup {
   const next: ToolSetup = { ...t, kind, sources: { ...t.sources, kind: 'user' } }
   const angle = defaultTipAngle(kind)
-  if (angle !== null && !(t.sources.tipAngle === 'user' && t.tipAngle > 0)) {
+  if (angle !== null && !((t.sources.tipAngle === 'user' || t.sources.tipAngle === 'saved') && t.tipAngle > 0)) {
     next.tipAngle = angle
     next.sources.tipAngle = 'assumed'
   }
@@ -127,4 +128,37 @@ export function toolProblems(t: ToolSetup): string[] {
   if (!(t.fluteLength > 0)) problems.push('Enter a flute length above 0 mm.')
   if (!(t.shoulderLength > 0)) problems.push('Enter a shoulder length above 0 mm.')
   return problems
+}
+
+/** The user's own values of a tool entry: fields typed in this session or applied from a saved edit. */
+export type ToolEdits = Partial<Pick<ToolSetup, ToolField>>
+
+const EDITABLE_FIELDS: ToolField[] = ['kind', 'diameter', 'cornerRadius', 'tipAngle', 'fluteLength', 'shoulderLength']
+
+export function toolEdits(t: ToolSetup): ToolEdits {
+  const out: Record<string, unknown> = {}
+  for (const f of EDITABLE_FIELDS) {
+    if (t.sources[f] === 'user' || t.sources[f] === 'saved') out[f] = t[f]
+  }
+  return out as ToolEdits
+}
+
+/** The entry with saved edits applied; those fields are marked 'saved'. */
+export function withSavedEdits(t: ToolSetup, edits: ToolEdits): ToolSetup {
+  const next: ToolSetup = { ...t, sources: { ...t.sources } }
+  for (const f of EDITABLE_FIELDS) {
+    const v = edits[f]
+    if (v === undefined) continue
+    ;(next as unknown as Record<string, unknown>)[f] = v
+    next.sources[f] = 'saved'
+  }
+  return next
+}
+
+/**
+ * Key under which a tool's edits are saved: the Makera Studio tool name when the file header names
+ * the tool, otherwise the tool number (a file without a header gives no diameter to match on).
+ */
+export function toolEditKey(t: ToolSetup): string {
+  return t.name !== '' ? `name:${t.name}` : `number:${t.number}`
 }
