@@ -163,6 +163,10 @@ then run tests once at the end; do not re-run them after every edit.
 one coherent piece) at a time. Read-only lookups go to `Explore`. Every agent gets a title that names what
 it does. Never run more than 1 Fable agent at a time.
 
+**Code review after each milestone.** The parent session runs it itself (the owner does not): medium
+effort, over that milestone's changes only, with exactly 2 Opus review agents, never more. The builder
+agent then fixes all findings, and the fixes are checked in the browser before the next milestone.
+
 **Review subagents never extend the benefit of the doubt.** A reviewer treats every existing assumption in
 the code under review (input validated, edge case handled, branch unreachable) as unverified until it
 checks it. "I checked this and it holds" is a complete answer; an empty findings list is a valid outcome.
