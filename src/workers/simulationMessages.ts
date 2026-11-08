@@ -28,14 +28,16 @@ export interface SimulationFrame {
   deviation: DeviationSummary | null
 }
 
-/** Placed parts compared with the stock. */
+/** Placed parts compared with the stock, answering the compare request with the same id. */
 export interface ComparisonResult {
   type: 'comparison'
+  requestId: number
   /**
    * Per cell, interleaved: the height below which the stock is a gouge, and the height above which
-   * it is leftover. NaN outside every part outline; -Infinity where no gouge is possible.
+   * it is leftover. NaN outside every part outline; -Infinity where no gouge is possible. Null when
+   * the request had no parts: the comparison is cleared.
    */
-  limits: Float32Array
+  limits: Float32Array | null
   /** Deviation at the stock state shown when the comparison was made. */
   deviation: DeviationSummary | null
   rasterizeMs: number
@@ -51,7 +53,13 @@ export type SimulationRequest =
       tools: { number: number; shape: CutterShape }[]
     }
   | { type: 'seek'; moveIndex: number }
-  | { type: 'compare'; parts: { positions: Float32Array; indices: Uint32Array }[]; tolerances: Tolerances }
+  | {
+      type: 'compare'
+      requestId: number
+      /** Parts placed in work coordinates; empty clears the comparison. */
+      parts: { positions: Float32Array; indices: Uint32Array }[]
+      tolerances: Tolerances
+    }
   | {
       type: 'autoOrient'
       requestId: number
@@ -81,4 +89,5 @@ export type SimulationResponse =
   | { type: 'frame'; frame: SimulationFrame }
   | ComparisonResult
   | { type: 'orientations'; requestId: number; candidates: OrientationCandidate[]; ms: number }
-  | { type: 'error'; message: string; during: 'simulation' | 'comparison' | 'autoOrient' }
+  | { type: 'error'; message: string; during: 'simulation' }
+  | { type: 'error'; message: string; during: 'comparison' | 'autoOrient'; requestId: number }

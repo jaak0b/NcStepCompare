@@ -6,11 +6,11 @@ import { readStepPart } from '../engine/stepModel'
 import type { StepRequest, StepResponse } from './stepMessages'
 
 self.onmessage = async (event: MessageEvent<StepRequest>) => {
-  const { file } = event.data
+  const { file, deflection } = event.data
   try {
     const occt = await occtimportjs({ locateFile: () => wasmUrl })
     const bytes = new Uint8Array(await file.arrayBuffer())
-    const part = readStepPart(occt, bytes, file.name)
+    const part = readStepPart(occt, bytes, file.name, deflection)
     const response: StepResponse = { ok: true, part }
     self.postMessage(response, { transfer: [part.mesh.positions.buffer, part.mesh.indices.buffer] as ArrayBuffer[] })
   } catch (err) {

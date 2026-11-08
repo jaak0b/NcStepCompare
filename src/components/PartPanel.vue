@@ -8,6 +8,8 @@ import { parseDecimalInput } from '../ui/decimalInput'
 
 const props = defineProps<{
   part: StepPart
+  /** True when the placement came from the saved setup. */
+  restored: boolean
   placement: PartPlacement
   placedBounds: Box3D
   /** Why auto-orient cannot run now, or null when it can. */
@@ -105,6 +107,9 @@ const orientationName = (c: { upAxis: UpAxis; quarterTurns: QuarterTurns }) =>
     </div>
     <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
     <dl>
+      <dt>Placement</dt>
+      <dd v-if="restored">Saved placement applied (this .nc file, same STEP file name and size)</dd>
+      <dd v-else>New part: centred on the stock, bottom on the stock bottom, then as entered</dd>
       <dt>Placed bounding box (calculated)</dt>
       <dd>
         X {{ mm(placedBounds.min.x) }} to {{ mm(placedBounds.max.x) }}, Y {{ mm(placedBounds.min.y) }} to

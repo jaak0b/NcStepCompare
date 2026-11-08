@@ -23,7 +23,7 @@ export interface SimulationHandlers {
   /** A failed simulation; the stock is gone. */
   onError(message: string): void
   /** A failed comparison or auto-orient; the simulation is still usable. */
-  onComparisonError(message: string, during: 'comparison' | 'autoOrient'): void
+  onComparisonError(message: string, during: 'comparison' | 'autoOrient', requestId: number): void
 }
 
 export class SimulationClient {
@@ -48,7 +48,7 @@ export class SimulationClient {
       else if (r.type === 'comparison') handlers.onComparison(r)
       else if (r.type === 'orientations') handlers.onOrientations(r.requestId, r.candidates, r.ms)
       else if (r.during === 'simulation') handlers.onError(r.message)
-      else handlers.onComparisonError(r.message, r.during)
+      else handlers.onComparisonError(r.message, r.during, r.requestId)
     }
     worker.onmessageerror = () => {
       if (worker === this.worker) handlers.onError('A message from the simulation worker could not be read.')
@@ -82,12 +82,19 @@ export class SimulationClient {
     this.worker?.postMessage({ type: 'seek', moveIndex } satisfies SimulationRequest)
   }
 
-  /** Compares the stock with parts already placed in work coordinates. Sends copies. */
-  compare(parts: { positions: Float32Array; indices: Uint32Array }[], tolerances: Tolerances): void {
+  /**
+   * Compares the stock with parts already placed in work coordinates; no parts clears the
+   * comparison. Sends copies. The result carries the same request id.
+   */
+  compare(
+    requestId: number,
+    parts: { positions: Float32Array; indices: Uint32Array }[],
+    tolerances: Tolerances,
+  ): void {
     if (!this.worker) return
     const copies = parts.map((p) => ({ positions: p.positions.slice(), indices: p.indices.slice() }))
     this.worker.postMessage(
-      { type: 'compare', parts: copies, tolerances: { ...tolerances } } satisfies SimulationRequest,
+      { type: 'compare', requestId, parts: copies, tolerances: { ...tolerances } } satisfies SimulationRequest,
       copies.flatMap((p) => [p.positions.buffer, p.indices.buffer]) as ArrayBuffer[],
     )
   }

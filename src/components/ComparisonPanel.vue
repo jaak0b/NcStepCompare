@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { toleranceBelowCellSize, type DeviationSummary, type Tolerances } from '../engine/deviation'
 import type { SettingSource } from '../stores/jobSetup'
 import { parseDecimalInput } from '../ui/decimalInput'
+import { SOURCE_LABEL } from '../ui/sourceLabel'
 import { DEVIATION_COLORS } from '../viewer/stockSurface'
 
 const props = defineProps<{
@@ -13,6 +14,8 @@ const props = defineProps<{
   deviation: DeviationSummary | null
   shownMove: number
   timing: { rasterizeMs: number; limitsMs: number } | null
+  /** Tessellation chord deviation of the STEP meshes, mm. */
+  deflection: number
   running: boolean
   error: string | null
   outlinesVisible: boolean
@@ -42,7 +45,7 @@ function onTolerance(which: keyof Tolerances) {
   emit('tolerance', which, v)
 }
 
-const label = (s: SettingSource) => (s === 'user' ? 'edited' : 'assumed default')
+const label = (s: SettingSource) => SOURCE_LABEL[s]
 const cells = (n: number) => n.toLocaleString('en-US')
 </script>
 
@@ -59,8 +62,9 @@ const cells = (n: number) => n.toLocaleString('en-US')
     </dl>
     <p v-if="inputProblem" class="problem">{{ inputProblem }}</p>
     <p v-if="toleranceBelowCellSize(cellSize, tolerances)" class="problem">
-      Set the cell size to at most the smaller tolerance. With larger cells, walls that are within tolerance
-      can still show as gouge or leftover.
+      Set the cell size to at most the smaller tolerance. With larger cells the check looks at each cell on its
+      own, so a wall that is within tolerance but runs close to a cell centre shows as a line of gouge or
+      leftover one cell wide.
     </p>
     <label class="toggle">
       <input
@@ -86,14 +90,18 @@ const cells = (n: number) => n.toLocaleString('en-US')
         <dd>{{ cells(deviation.leftoverCells) }}</dd>
         <dt>Highest leftover above the model (measured)</dt>
         <dd>{{ deviation.maxLeftover.toFixed(3) }} mm</dd>
+        <dt>STEP tessellation deviation (calculated, a tenth of the smaller tolerance)</dt>
+        <dd>{{ deflection.toFixed(4) }} mm</dd>
         <template v-if="timing">
-          <dt>Model rasterisation (measured)</dt>
-          <dd>{{ timing.rasterizeMs.toFixed(0) }} ms, tolerance zones {{ timing.limitsMs.toFixed(0) }} ms</dd>
+          <dt>Model rasterisation time (measured)</dt>
+          <dd>{{ timing.rasterizeMs.toFixed(0) }} ms</dd>
+          <dt>Tolerance zone time (measured)</dt>
+          <dd>{{ timing.limitsMs.toFixed(0) }} ms</dd>
         </template>
       </dl>
       <p class="note">
-        A cell is a gouge or leftover when the machined surface lies outside the tolerance distance from the
-        model surface. Depths are measured vertically.
+        A cell is a gouge or leftover when the machined surface is farther than the tolerance from the model
+        surface along X, Y and Z. Depths are measured vertically.
       </p>
       <div class="legend">
         <span><i :style="{ background: DEVIATION_COLORS.gouge }"></i>Gouge: cut deeper than the model</span>

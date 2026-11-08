@@ -1,26 +1,19 @@
 <script setup lang="ts">
-import type { CutterShapeKind } from '../engine/toolShape'
+import { CUTTER_SHAPE_KINDS as KINDS, type CutterShapeKind } from '../engine/toolShape'
 import {
   toolProblems,
   withToolKind,
   withToolValue,
   type ToolField,
   type ToolSetup,
-  type ValueSource,
 } from '../engine/toolTable'
 import { parseDecimalInput } from '../ui/decimalInput'
+import { SOURCE_LABEL } from '../ui/sourceLabel'
 
 const props = defineProps<{ tools: ToolSetup[] }>()
 const emit = defineEmits<{ update: [tools: ToolSetup[]] }>()
 
-const KINDS: CutterShapeKind[] = ['flat end mill', 'ball end', 'drill', 'V-bit', 'thread mill']
 
-const SOURCE_LABEL: Record<ValueSource, string> = {
-  header: 'header',
-  user: 'edited',
-  assumed: 'assumed',
-  missing: 'missing',
-}
 
 type NumberField = Exclude<ToolField, 'kind'>
 
@@ -83,12 +76,12 @@ function onValue(number: number, field: NumberField, event: Event) {
         <template v-if="t.shankDiameter !== null">
           <label>Shank diameter (mm)</label>
           <span>{{ t.shankDiameter }}</span>
-          <span class="source header">header</span>
+          <span class="source header">{{ SOURCE_LABEL.header }}</span>
         </template>
         <template v-if="t.studioType !== null">
           <label>Makera Studio type</label>
           <span>{{ t.studioType }}</span>
-          <span class="source header">header</span>
+          <span class="source header">{{ SOURCE_LABEL.header }}</span>
         </template>
       </div>
     </div>

@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import type { SimulationReady } from '../workers/simulationMessages'
 import { parseDecimalInput } from '../ui/decimalInput'
+import { SOURCE_LABEL } from '../ui/sourceLabel'
 
 const props = defineProps<{
   status: 'idle' | 'running' | 'ready' | 'error'
@@ -49,7 +50,7 @@ const mb = (bytes: number) => `${(bytes / 1e6).toFixed(0)} MB`
       Stock assumed from the toolpath extent: the file has no stock in its header.
     </p>
     <dl>
-      <dt>Grid cell size ({{ cellSizeSource === 'user' ? 'edited' : 'assumed default' }})</dt>
+      <dt>Grid cell size ({{ SOURCE_LABEL[cellSizeSource] }})</dt>
       <dd>
         <input v-model="text" type="text" inputmode="decimal" @change="onCellSize" /> mm
       </dd>

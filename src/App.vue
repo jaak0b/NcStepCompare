@@ -11,8 +11,8 @@ import type { DeviationSummary, OrientationCandidate } from './engine/deviation'
 import { cellSizeProblem } from './engine/heightGrid'
 import { NO_TOOLPATH } from './engine/moveList'
 import { defaultPlacement, placePositions, type PartPlacement } from './engine/partPlacement'
-import { simulationStock } from './engine/stock'
-import { meshBounds, type StepPart } from './engine/stepModel'
+import { simulationStock, type Box3D } from './engine/stock'
+import { meshBounds, tessellationDeflection, type StepPart } from './engine/stepModel'
 import { buildToolTable, type ToolSetup } from './engine/toolTable'
 import { useJobSetupStore } from './stores/jobSetup'
 import { readStepInWorker } from './workers/stepMessages'
@@ -32,7 +32,15 @@ const setup = useJobSetupStore()
 const tools = computed(() => setup.tools)
 const cellSize = computed(() => setup.cellSize)
 
-const stepParts = shallowRef<StepPart[]>([])
+/** A STEP part loaded in this session; `id` is its entry in the saved setup. */
+interface LoadedPart {
+  id: string
+  file: File
+  part: StepPart
+  /** True when the placement came from the saved setup instead of the defaults. */
+  restored: boolean
+}
+const stepParts = shallowRef<LoadedPart[]>([])
 const stepLoading = ref(false)
 const stepError = ref<string | null>(null)
 interface OrientState {
@@ -42,12 +50,15 @@ interface OrientState {
   error: string | null
 }
 const orientStates = ref<Record<string, OrientState>>({})
+/** Auto-orient request id to part id. */
 const orientRequests = new Map<number, string>()
 let nextOrientRequest = 1
 const deviation = shallowRef<DeviationSummary | null>(null)
 const comparisonTiming = ref<{ rasterizeMs: number; limitsMs: number } | null>(null)
 const comparisonRunning = ref(false)
 const comparisonError = ref<string | null>(null)
+/** Id of the latest compare request; results of older ones are dropped. */
+let latestCompare = 0
 
 const simClient = new SimulationClient()
 const simStatus = ref<'idle' | 'running' | 'ready' | 'error'>('idle')
@@ -120,6 +131,12 @@ function resetSimulation() {
   shownIndex.value = 0
   deviation.value = null
   comparisonRunning.value = false
+  comparisonTiming.value = null
+  // The worker is gone, so no auto-orient answer will come; the user can run it again.
+  orientRequests.clear()
+  for (const id of Object.keys(orientStates.value)) {
+    if (orientStates.value[id].running) orientStates.value[id] = { ...orientStates.value[id], running: false }
+  }
   viewer.value?.clearStock()
 }
 
@@ -166,20 +183,21 @@ function startSimulation() {
         })
       },
       onComparison: (r) => {
+        if (r.requestId !== latestCompare) return
         viewer.value?.setStockLimits(r.limits)
         deviation.value = r.deviation
-        comparisonTiming.value = { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs }
+        comparisonTiming.value = r.limits ? { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs } : null
         comparisonRunning.value = false
         comparisonError.value = null
       },
       onOrientations: (requestId, candidates, ms) => {
-        const fileName = orientRequests.get(requestId)
+        const id = orientRequests.get(requestId)
         orientRequests.delete(requestId)
-        if (!fileName) return
-        orientStates.value[fileName] = { running: false, candidates, ms, error: null }
-        const current = setup.placementFor(fileName)
+        if (!id) return
+        orientStates.value[id] = { running: false, candidates, ms, error: null }
+        const current = setup.placementOf(id)
         if (current && candidates.length > 0) {
-          setup.setPlacement(fileName, {
+          setup.setPlacement(id, {
             ...current,
             upAxis: candidates[0].upAxis,
             quarterTurns: candidates[0].quarterTurns,
@@ -190,48 +208,100 @@ function startSimulation() {
         simError.value = message
         simStatus.value = 'error'
       },
-      onComparisonError: (message, during) => {
+      onComparisonError: (message, during, requestId) => {
         if (during === 'comparison') {
+          if (requestId !== latestCompare) return
           comparisonError.value = message
           comparisonRunning.value = false
           return
         }
-        for (const [id, fileName] of orientRequests) {
-          orientStates.value[fileName] = { running: false, candidates: null, ms: null, error: message }
-          orientRequests.delete(id)
-        }
+        const id = orientRequests.get(requestId)
+        orientRequests.delete(requestId)
+        if (id) orientStates.value[id] = { running: false, candidates: null, ms: null, error: message }
       },
     },
   )
 }
 
+interface PlacedPart {
+  id: string
+  loaded: LoadedPart
+  placement: PartPlacement
+  positions: Float32Array
+  indices: Uint32Array
+  bounds: Box3D
+}
+
+/**
+ * Placed parts are cached per part: an entry is rebuilt only when that part's placement or mesh
+ * changes, so unchanged parts keep their identity and nothing downstream redoes work for them.
+ */
+const placedCache = new Map<string, PlacedPart>()
+const placementKey = (p: PartPlacement) => `${p.upAxis}|${p.quarterTurns}|${p.centerX}|${p.centerY}|${p.bottomZ}`
+
 /** Each loaded part placed in work coordinates. */
-const placedParts = computed(() =>
-  stepParts.value.flatMap((part) => {
-    const placement = setup.placementFor(part.fileName)
-    if (!placement) return []
-    const positions = placePositions(part.mesh, placement)
-    return [{ part, placement, positions, indices: part.mesh.indices, bounds: meshBounds(positions) }]
-  }),
-)
-
-/** Saved placements whose STEP file has not been picked again since the reload. */
-const waitingParts = computed(() =>
-  setup.parts.filter((p) => !stepParts.value.some((s) => s.fileName === p.fileName)),
-)
-
-watch(placedParts, (parts) => viewer.value?.setPartOutlines(parts))
-
-watch([placedParts, () => setup.tolerances, simStatus], ([parts, tolerances, status]) => {
-  if (status !== 'ready') return
-  if (parts.length === 0) {
-    viewer.value?.setStockLimits(null)
-    deviation.value = null
-    comparisonTiming.value = null
-    return
+const placedParts = computed<PlacedPart[]>(() => {
+  const out: PlacedPart[] = []
+  for (const loaded of stepParts.value) {
+    const placement = setup.placementOf(loaded.id)
+    if (!placement) continue
+    const cached = placedCache.get(loaded.id)
+    if (cached && cached.loaded.part === loaded.part && placementKey(cached.placement) === placementKey(placement)) {
+      out.push(cached)
+      continue
+    }
+    const positions = placePositions(loaded.part.mesh, placement)
+    const placed = { id: loaded.id, loaded, placement: { ...placement }, positions, indices: loaded.part.mesh.indices, bounds: meshBounds(positions) }
+    placedCache.set(loaded.id, placed)
+    out.push(placed)
   }
-  comparisonRunning.value = true
-  simClient.compare(parts, tolerances)
+  for (const id of placedCache.keys()) if (!out.some((p) => p.id === id)) placedCache.delete(id)
+  return out
+})
+
+const sameParts = (a: PlacedPart[], b: PlacedPart[] | undefined) =>
+  !!b && a.length === b.length && a.every((p, k) => p === b[k])
+
+/** Saved parts of this job whose STEP file has not been picked again since the reload. */
+const waitingParts = computed(() =>
+  setup.parts.filter((p) => p.ncFileName === setup.ncFileName && !stepParts.value.some((s) => s.id === p.id)),
+)
+
+function requestCompare() {
+  if (simStatus.value !== 'ready') return
+  latestCompare++
+  comparisonRunning.value = placedParts.value.length > 0
+  comparisonError.value = null
+  simClient.compare(latestCompare, placedParts.value, setup.tolerances)
+}
+
+watch(placedParts, (parts, before) => {
+  if (sameParts(parts, before)) return
+  viewer.value?.setPartOutlines(parts)
+  requestCompare()
+})
+watch(
+  () => `${setup.tolerances.gouge}|${setup.tolerances.leftover}`,
+  () => requestCompare(),
+)
+watch(simStatus, (status) => {
+  if (status === 'ready' && placedParts.value.length > 0) requestCompare()
+})
+
+/** Tessellation chord deviation for the current tolerances. */
+const deflection = computed(() => tessellationDeflection(setup.tolerances))
+
+// A tolerance change that changes the deflection re-reads the loaded STEP files.
+watch(deflection, async (d) => {
+  for (const loaded of stepParts.value) {
+    try {
+      const part = await readStepInWorker(loaded.file, d)
+      if (d !== deflection.value) return
+      stepParts.value = stepParts.value.map((p) => (p.id === loaded.id ? { ...p, part } : p))
+    } catch (err) {
+      stepError.value = `Could not read ${loaded.file.name} again: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
 })
 
 async function onStepChosen(event: Event) {
@@ -245,10 +315,11 @@ async function onStepChosen(event: Event) {
   const problems: string[] = []
   for (const file of files) {
     try {
-      const part = await readStepInWorker(file)
-      if (!setup.placementFor(part.fileName)) setup.setPlacement(part.fileName, defaultPlacement(box))
-      stepParts.value = [...stepParts.value.filter((p) => p.fileName !== part.fileName), part]
-      delete orientStates.value[part.fileName]
+      const part = await readStepInWorker(file, deflection.value)
+      const inUse = new Set(stepParts.value.map((p) => p.id))
+      const saved = setup.findSaved(file.name, file.size, inUse)
+      const id = saved?.id ?? setup.addPart(file.name, file.size, defaultPlacement(box))
+      stepParts.value = [...stepParts.value, { id, file, part, restored: !!saved }]
     } catch (err) {
       problems.push(`Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -257,28 +328,28 @@ async function onStepChosen(event: Event) {
   stepLoading.value = false
 }
 
-function onPlacement(fileName: string, placement: PartPlacement) {
-  setup.setPlacement(fileName, placement)
+function onPlacement(id: string, placement: PartPlacement) {
+  setup.setPlacement(id, placement)
 }
 
-function removePart(fileName: string) {
-  stepParts.value = stepParts.value.filter((p) => p.fileName !== fileName)
-  setup.removePart(fileName)
-  delete orientStates.value[fileName]
+function removePart(id: string) {
+  stepParts.value = stepParts.value.filter((p) => p.id !== id)
+  setup.removePart(id)
+  delete orientStates.value[id]
 }
 
-function autoOrient(fileName: string) {
-  const part = stepParts.value.find((p) => p.fileName === fileName)
-  const placement = setup.placementFor(fileName)
-  if (!part || !placement || simStatus.value !== 'ready') return
-  const id = nextOrientRequest++
-  orientRequests.set(id, fileName)
-  orientStates.value[fileName] = { running: true, candidates: null, ms: null, error: null }
-  simClient.autoOrient(id, part.mesh, placement)
+function autoOrient(id: string) {
+  const loaded = stepParts.value.find((p) => p.id === id)
+  const placement = setup.placementOf(id)
+  if (!loaded || !placement || simStatus.value !== 'ready') return
+  const requestId = nextOrientRequest++
+  orientRequests.set(requestId, id)
+  orientStates.value[id] = { running: true, candidates: null, ms: null, error: null }
+  simClient.autoOrient(requestId, loaded.part.mesh, placement)
 }
 
-function orientState(fileName: string): OrientState {
-  return orientStates.value[fileName] ?? { running: false, candidates: null, ms: null, error: null }
+function orientState(id: string): OrientState {
+  return orientStates.value[id] ?? { running: false, candidates: null, ms: null, error: null }
 }
 
 function seek(index: number) {
@@ -302,6 +373,11 @@ async function onFileChosen(event: Event) {
     hiddenToolpaths.value = new Set()
     loaded.value = result
     const used = [...new Set(result.summary.toolpaths.flatMap((t) => t.toolsUsed))]
+    // Parts belong to a job: another .nc file starts without the parts loaded for this one.
+    if (file.name !== setup.ncFileName) {
+      stepParts.value = []
+      orientStates.value = {}
+    }
     setup.applyLoadedJob(file.name, buildToolTable(result.job.header.tools, used))
     startSimulation()
   } catch (err) {
@@ -378,21 +454,22 @@ function setAllToolpaths(visible: boolean) {
           <p v-if="!stockBox" class="status">Available once the job has a stock.</p>
           <p v-if="stepLoading" class="status">Reading the STEP files.</p>
           <p v-if="stepError" class="error">{{ stepError }}</p>
-          <p v-for="w in waitingParts" :key="w.fileName" class="status">
+          <p v-for="w in waitingParts" :key="w.id" class="status">
             Pick {{ w.fileName }} again to use its saved placement.
-            <button type="button" @click="setup.removePart(w.fileName)">Forget</button>
+            <button type="button" @click="setup.removePart(w.id)">Forget</button>
           </p>
           <PartPanel
             v-for="p in placedParts"
-            :key="p.part.fileName"
-            :part="p.part"
+            :key="p.id"
+            :part="p.loaded.part"
+            :restored="p.loaded.restored"
             :placement="p.placement"
             :placed-bounds="p.bounds"
             :auto-orient-blocked="simStatus === 'ready' ? null : 'Available once the simulation has finished.'"
-            :orient="orientState(p.part.fileName)"
-            @update:placement="onPlacement(p.part.fileName, $event)"
-            @auto-orient="autoOrient(p.part.fileName)"
-            @remove="removePart(p.part.fileName)"
+            :orient="orientState(p.id)"
+            @update:placement="onPlacement(p.id, $event)"
+            @auto-orient="autoOrient(p.id)"
+            @remove="removePart(p.id)"
           />
         </section>
         <ComparisonPanel
@@ -403,6 +480,7 @@ function setAllToolpaths(visible: boolean) {
           :deviation="deviation"
           :shown-move="shownIndex"
           :timing="comparisonTiming"
+          :deflection="deflection"
           :running="comparisonRunning"
           :error="comparisonError"
           :outlines-visible="setup.outlinesVisible"

@@ -43,6 +43,7 @@ export class ToolpathScene {
   })
   private readonly axes = new THREE.AxesHelper(10)
   private readonly outlineGroup = new THREE.Group()
+  private readonly outlines = new Map<string, { positions: Float32Array; lines: THREE.LineSegments }>()
   // Drawn through the stock so the part placement can be checked before anything is cut.
   private readonly outlineMaterial = new THREE.LineBasicMaterial({
     color: PART_OUTLINE_COLOR,
@@ -177,16 +178,32 @@ export class ToolpathScene {
     this.requestRender()
   }
 
-  /** Shows the feature edges of each placed part (work coordinates). */
-  setPartOutlines(parts: { positions: Float32Array; indices: Uint32Array }[]): void {
-    this.clearPartOutlines()
+  /**
+   * Shows the feature edges of each placed part (work coordinates). A part whose positions array is
+   * the same object as last time keeps its outline; only new or moved parts are rebuilt.
+   */
+  setPartOutlines(parts: { id: string; positions: Float32Array; indices: Uint32Array }[]): void {
+    const keep = new Set(parts.map((p) => p.id))
+    for (const [id, o] of this.outlines) {
+      if (keep.has(id)) continue
+      this.outlineGroup.remove(o.lines)
+      o.lines.geometry.dispose()
+      this.outlines.delete(id)
+    }
     for (const p of parts) {
+      const old = this.outlines.get(p.id)
+      if (old?.positions === p.positions) continue
+      if (old) {
+        this.outlineGroup.remove(old.lines)
+        old.lines.geometry.dispose()
+      }
       const mesh = new THREE.BufferGeometry()
       mesh.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
       mesh.setIndex(new THREE.BufferAttribute(p.indices, 1))
-      const edges = new THREE.EdgesGeometry(mesh, OUTLINE_CREASE_ANGLE)
+      const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, OUTLINE_CREASE_ANGLE), this.outlineMaterial)
       mesh.dispose()
-      this.outlineGroup.add(new THREE.LineSegments(edges, this.outlineMaterial))
+      this.outlineGroup.add(lines)
+      this.outlines.set(p.id, { positions: p.positions, lines })
     }
     this.requestRender()
   }
@@ -197,10 +214,11 @@ export class ToolpathScene {
   }
 
   private clearPartOutlines(): void {
-    for (const child of [...this.outlineGroup.children]) {
-      this.outlineGroup.remove(child)
-      if (child instanceof THREE.LineSegments) child.geometry.dispose()
+    for (const o of this.outlines.values()) {
+      this.outlineGroup.remove(o.lines)
+      o.lines.geometry.dispose()
     }
+    this.outlines.clear()
   }
 
   clearStock(): void {

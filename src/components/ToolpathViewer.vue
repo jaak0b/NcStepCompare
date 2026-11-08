@@ -56,7 +56,8 @@ defineExpose({
   applyStockRect: (rect: CellRect, data: Float32Array) => scene?.applyStockRect(rect, data),
   clearStock: () => scene?.clearStock(),
   setStockLimits: (limits: Float32Array | null) => scene?.setStockLimits(limits),
-  setPartOutlines: (parts: { positions: Float32Array; indices: Uint32Array }[]) => scene?.setPartOutlines(parts),
+  setPartOutlines: (parts: { id: string; positions: Float32Array; indices: Uint32Array }[]) =>
+    scene?.setPartOutlines(parts),
   lastRenderMs: () => scene?.lastRenderMs ?? 0,
 })
 watch(

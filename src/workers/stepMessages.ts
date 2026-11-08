@@ -2,12 +2,14 @@ import type { StepPart } from '../engine/stepModel'
 
 export interface StepRequest {
   file: File
+  /** Tessellation chord deviation, mm. */
+  deflection: number
 }
 
 export type StepResponse = { ok: true; part: StepPart } | { ok: false; message: string }
 
 /** Reads a STEP file in a Web Worker. Rejects with the worker's error message. */
-export function readStepInWorker(file: File): Promise<StepPart> {
+export function readStepInWorker(file: File, deflection: number): Promise<StepPart> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./stepWorker.ts', import.meta.url), { type: 'module' })
     worker.onmessage = (event: MessageEvent<StepResponse>) => {
@@ -24,6 +26,6 @@ export function readStepInWorker(file: File): Promise<StepPart> {
       worker.terminate()
       reject(new Error(event.message || 'The STEP worker stopped unexpectedly.'))
     }
-    worker.postMessage({ file } satisfies StepRequest)
+    worker.postMessage({ file, deflection } satisfies StepRequest)
   })
 }
