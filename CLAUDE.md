@@ -33,7 +33,7 @@ browser, Web Workers for the simulation, vitest for tests.
 5. Findings list, each clickable so the camera jumps there: gouges; material left over (including holes
    and openings that do not go through); rapid moves through material still present at that moment
    (sequential, not only the final state); shank/holder collision (tool deeper in material than its
-   flute/shoulder length); tabs along the cut-out (count and size); depth into the spoilboard below the
+   flute/shoulder length); depth into the spoilboard below the
    stock; time per toolpath and total (feed-based, acceleration ignored, and the UI says so); tool-change
    list.
    Threads: a hole cut wider than the model by a thread-mill tool is reported as "thread", not as a
@@ -51,9 +51,8 @@ browser, Web Workers for the simulation, vitest for tests.
    full-width slot where a 0.5 mm stepover was intended shows up with the move that did it. Limits are
    per tool and editable; defaults are width of cut 50 % of the tool diameter and depth of cut 1x the
    diameter (assumed starting values).
-   Cut-out separation: check that each part is cut free from the stock apart from its tabs. A missing or
-   too shallow cut-out (the comparison alone does not see it, because material outside the part outline
-   is not compared) is a finding.
+   Tabs get no special treatment: they are material left outside the part, so they show as leftover
+   like any other (owner decision 2026-11-08). A missing cut-out shows the same way.
    Plunge check: an end mill feeding straight down into material still present (drills excluded).
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
@@ -101,7 +100,8 @@ adding a big dependency.
   - 11 M3 holes are 2.53 mm diameter in the model (thread minor diameter) and get thread-milled to about
     3.0 mm. That is expected: report it as "thread", not as a gouge.
   - Through-cuts end 0.3 mm below the stock (Z -10.3); drilling to Z -11.0.
-  - The cut-out leaves 6 tabs, 6 mm wide, 0.6 mm of aluminium high.
+  - The cut-out leaves 6 tabs, 6 mm wide, 0.6 mm of aluminium high (from the owner's brief; they show
+    as leftover, not as a separate finding).
 - Negative test (file still to come from the owner): an earlier version roughed with a "3D Relief"
   toolpath (Offset strategy) that cut straight through a raised island of the part next to the end of
   the long central channel, beside the big round cut-out. The tool must catch that gouge.
