@@ -75,6 +75,7 @@ uniform float uBottom;
 uniform vec3 uColor;
 in vec3 vWorld;
 in float vHeight;
+out vec4 fragColor;
 
 void main() {
 #ifndef SKIRT
@@ -84,7 +85,7 @@ void main() {
   if (dot(n, cameraPosition - vWorld) < 0.0) n = -n;
   vec3 light = normalize(vec3(0.35, -0.55, 1.0));
   float diffuse = max(dot(n, light), 0.0);
-  gl_FragColor = vec4(uColor * (0.42 + 0.58 * diffuse), 1.0);
+  fragColor = vec4(uColor * (0.42 + 0.58 * diffuse), 1.0);
 }
 `
 
