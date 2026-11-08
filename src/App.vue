@@ -6,6 +6,7 @@ import JobSummary from './components/JobSummary.vue'
 import PartPanel from './components/PartPanel.vue'
 import PlaybackControls from './components/PlaybackControls.vue'
 import SimulationPanel from './components/SimulationPanel.vue'
+import TimePanel from './components/TimePanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
 import type { OrientationCandidate } from './engine/autoOrient'
@@ -610,6 +611,7 @@ function setAllToolpaths(visible: boolean) {
           @toggle-toolpath="toggleToolpath"
           @set-all-toolpaths="setAllToolpaths"
         />
+        <TimePanel :loaded="loaded" />
       </template>
       <p v-else-if="!loading" class="status">Open a .nc file to view its toolpaths.</p>
     </aside>

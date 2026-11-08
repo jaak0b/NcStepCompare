@@ -60,6 +60,16 @@ export interface ToolChange {
   toolpath: number
 }
 
+/** A programmed dwell (G4). */
+export interface Dwell {
+  /** 1-based line number. */
+  line: number
+  /** P value read as seconds (the RS274/NGC and Grbl convention). */
+  seconds: number
+  /** Toolpath the dwell belongs to (the toolpath marker in force), or NO_TOOLPATH. */
+  toolpath: number
+}
+
 /** Why the whole job was not loaded. */
 export interface ParseRefusal {
   /** 1-based line number. */
@@ -75,6 +85,7 @@ export interface ParsedJob {
   hasMakeraHeader: boolean
   moves: MoveList
   toolChanges: ToolChange[]
+  dwells: Dwell[]
   warnings: ParseWarning[]
   /** Set when the job is refused; moves, tool changes and warnings are then empty. */
   refusal: ParseRefusal | null
@@ -130,6 +141,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
   let hasMakeraHeader = false
   const warnings: ParseWarning[] = []
   const toolChanges: ToolChange[] = []
+  const dwells: Dwell[] = []
   const moves = new MoveListBuilder(Math.max(1024, Math.ceil(source.length / 20)))
 
   // Modal state.
@@ -301,6 +313,8 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     let hasX = false, hasY = false, hasZ = false, hasI = false, hasJ = false, hasR = false
     let vx = 0, vy = 0, vz = 0, vi = 0, vj = 0, vr = 0
     let fWord = NaN
+    let pWord = NaN
+    let dwell = false
     let sWord = NaN
     let tWord = NaN
     let toolChange = false
@@ -329,7 +343,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
             case 10: gMotion = Motion.Linear; break
             case 20: gMotion = Motion.ArcCW; break
             case 30: gMotion = Motion.ArcCCW; break
-            case 40: break // dwell: no motion
+            case 40: dwell = true; break // no motion
             case 170: newPlane = Plane.XY; break
             case 180: newPlane = Plane.XZ; break
             case 190: newPlane = Plane.YZ; break
@@ -386,8 +400,9 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
         case LETTER_INDEX('F'): fWord = v; break
         case LETTER_INDEX('S'): sWord = v; break
         case LETTER_INDEX('T'): tWord = v; break
-        case LETTER_INDEX('N'): case LETTER_INDEX('P'): case LETTER_INDEX('H'): case LETTER_INDEX('D'):
-          break // line number, dwell time, offset numbers
+        case LETTER_INDEX('P'): pWord = v; break
+        case LETTER_INDEX('N'): case LETTER_INDEX('H'): case LETTER_INDEX('D'):
+          break // line number, offset numbers
         case LETTER_INDEX('K'):
           // K only matters for arcs outside G17, which are reported separately.
           break
@@ -402,6 +417,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
         hasMakeraHeader,
         moves: new MoveListBuilder(1).finish(),
         toolChanges: [],
+        dwells: [],
         warnings: [],
         refusal: {
           line: lineNo,
@@ -436,6 +452,10 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       toolChanges.push({ line: lineNo, tool, toolpath })
     }
     if (spindleWord >= 0) spindle = spindleWord as SpindleStateValue
+    if (dwell) {
+      if (Number.isNaN(pWord) || pWord < 0) warn('Dwell (G4) without a valid P time. It is not counted in the job time.')
+      else dwells.push({ line: lineNo, seconds: pWord, toolpath })
+    }
     if (gMotion !== Motion.None) motion = gMotion
     if (cancelMotion) motion = Motion.None
     if (gMotion === Motion.Unsupported) unsupportedMotionName = unsupportedMotionCode
@@ -551,6 +571,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     hasMakeraHeader,
     moves: moves.finish(),
     toolChanges,
+    dwells,
     warnings,
     refusal: null,
     lineCount: lineNo,
