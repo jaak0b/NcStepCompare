@@ -68,6 +68,12 @@ browser, Web Workers for the simulation, vitest for tests.
    name, and applied to any job that uses that tool. Placement, tolerances and files are not saved: the
    owner picks the .nc and STEP files by hand each time (owner decision 2026-11-08).
 
+Accuracy requirement (owner decision 2026-11-09): 3-axis only, but the simulation must represent the
+part that will actually be machined, including undercuts: thread grooves from a thread mill's real
+profile, dovetails, T-slots, keyseats, lollipop cutters. The single-height grid cannot do this, so it is
+replaced by a dexel model (per cell a list of material segments along Z) as the next step after
+milestone 4, starting with a written design for owner approval.
+
 Out of scope: machine travel-limit checks (the machine controller handles them).
 
 Later, after the groundwork is complete: Makera Studio tool-library import. Not in version 1 either:
