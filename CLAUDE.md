@@ -22,7 +22,12 @@ browser, Web Workers for the simulation, vitest for tests.
 3. Material removal on a height grid (0.05 mm default, configurable) in a Web Worker. Tool shapes: flat end
    mill, ball end, drill (editable tip angle), V-bit, thread mill (cylinder of its cutting diameter).
    Time slider and playback through the job, per toolpath.
-4. 3D view: machined stock coloured by deviation from the STEP (red = cut deeper than the model, blue =
+4. Comparison rule (owner decision 2026-11-08, no special cases): outside the parts the expected surface
+   is the stock bottom, so any material left outside the part outlines (cut-out frame, tabs, slivers next
+   to a wall) is leftover and coloured as such; cutting there is never a gouge. Cells outside the outline
+   use the same tolerance zone as inside, so a wall within tolerance of the model wall is within
+   tolerance on both sides.
+   3D view: machined stock coloured by deviation from the STEP (red = cut deeper than the model, blue =
    material left over, tolerance configurable), the STEP outline, toolpaths as lines (cutting vs rapid),
    toggles per toolpath.
 5. Findings list, each clickable so the camera jumps there: gouges; material left over (including holes
