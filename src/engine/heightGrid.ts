@@ -79,33 +79,3 @@ export function heightAt(grid: HeightGrid, x: number, y: number): number | null 
   if (i < 0 || j < 0 || i >= grid.nx || j >= grid.ny) return null
   return grid.heights[j * grid.nx + i]
 }
-
-export interface DownsampledHeights {
-  nx: number
-  ny: number
-  /** Size of one display cell in mm. */
-  cellSize: number
-  heights: Float32Array
-}
-
-/**
- * Display copy of the grid: each block of factor x factor cells becomes one value, the lowest
- * height in the block, so a slot narrower than a block still shows at its full depth.
- */
-export function downsampleMin(grid: HeightGrid, factor: number): DownsampledHeights {
-  const f = Math.max(1, Math.floor(factor))
-  const nx = Math.ceil(grid.nx / f)
-  const ny = Math.ceil(grid.ny / f)
-  const out = new Float32Array(nx * ny).fill(Infinity)
-  const h = grid.heights
-  for (let j = 0; j < grid.ny; j++) {
-    const row = j * grid.nx
-    const orow = Math.floor(j / f) * nx
-    for (let i = 0; i < grid.nx; i++) {
-      const v = h[row + i]
-      const o = orow + Math.floor(i / f)
-      if (v < out[o]) out[o] = v
-    }
-  }
-  return { nx, ny, cellSize: grid.cellSize * f, heights: out }
-}

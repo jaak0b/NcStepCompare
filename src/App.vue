@@ -5,14 +5,14 @@ import PlaybackControls from './components/PlaybackControls.vue'
 import SimulationPanel from './components/SimulationPanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
-import { DEFAULT_CELL_SIZE_MM } from './engine/heightGrid'
+import { DEFAULT_CELL_SIZE_MM, cellSizeProblem } from './engine/heightGrid'
 import { NO_TOOLPATH } from './engine/moveList'
 import { simulationStock } from './engine/stock'
 import { buildToolTable, type ToolSetup } from './engine/toolTable'
 import { parseFileInWorker, type LoadedJob } from './workers/parseMessages'
 import { SimulationClient } from './workers/simulationClient'
 import type { ToolMarker } from './viewer/toolpathScene'
-import type { SimulationFrame, SimulationReady } from './workers/simulationMessages'
+import type { SimulationReady } from './workers/simulationMessages'
 
 // shallowRef: the move list and grids hold large typed arrays that must not become reactive proxies.
 const loaded = shallowRef<LoadedJob | null>(null)
@@ -30,8 +30,12 @@ const simStatus = ref<'idle' | 'running' | 'ready' | 'error'>('idle')
 const simProgress = ref(0)
 const simError = ref<string | null>(null)
 const simResult = shallowRef<SimulationReady | null>(null)
-const frame = shallowRef<SimulationFrame | null>(null)
+/** Move index last asked for, and the one the shown stock belongs to. */
 const playIndex = ref(0)
+const shownIndex = ref(0)
+const frameTiming = ref<{ workerMs: number; requestToShownMs: number; renderMs: number } | null>(null)
+let seekRequestedAt = 0
+const viewer = ref<InstanceType<typeof ToolpathViewer> | null>(null)
 
 onBeforeUnmount(() => simClient.stop())
 
@@ -41,6 +45,7 @@ const stock = computed(() => {
   return simulationStock(l.job.header.stock, l.job.header.workOrigin, l.summary.bounds)
 })
 const stockBox = computed(() => stock.value?.box ?? null)
+const cellSizeError = computed(() => (stock.value ? cellSizeProblem(stock.value.box, cellSize.value) : null))
 
 const toolpathStarts = computed(() => {
   const l = loaded.value
@@ -61,14 +66,15 @@ const toolpathStarts = computed(() => {
 
 const currentLine = computed(() => {
   const m = loaded.value?.job.moves
-  return m && playIndex.value > 0 ? m.line[playIndex.value - 1] : null
+  return m && shownIndex.value > 0 ? m.line[shownIndex.value - 1] : null
 })
 
 const toolMarker = computed<ToolMarker | null>(() => {
   const m = loaded.value?.job.moves
   if (!m || m.count === 0 || simStatus.value !== 'ready') return null
-  const i = playIndex.value > 0 ? playIndex.value - 1 : 0
-  const arr = playIndex.value > 0 ? m.end : m.start
+  // At the move the shown stock belongs to, not the one last asked for.
+  const i = shownIndex.value > 0 ? shownIndex.value - 1 : 0
+  const arr = shownIndex.value > 0 ? m.end : m.start
   const tool = tools.value.find((t) => t.number === m.tool[i])
   if (!tool) return null
   return {
@@ -78,16 +84,23 @@ const toolMarker = computed<ToolMarker | null>(() => {
   }
 })
 
+/** Stops any running simulation and removes its results from the screen. */
+function resetSimulation() {
+  simClient.stop()
+  simStatus.value = 'idle'
+  simProgress.value = 0
+  simResult.value = null
+  simError.value = null
+  frameTiming.value = null
+  playIndex.value = 0
+  shownIndex.value = 0
+  viewer.value?.clearStock()
+}
+
 function startSimulation() {
   const l = loaded.value
-  simResult.value = null
-  frame.value = null
-  simError.value = null
-  if (!l || !stock.value) {
-    simClient.stop()
-    simStatus.value = 'idle'
-    return
-  }
+  resetSimulation()
+  if (!l || !stock.value || cellSizeError.value) return
   simStatus.value = 'running'
   simProgress.value = 0
   // Plain copies: Vue proxies cannot be sent to a worker.
@@ -107,12 +120,23 @@ function startSimulation() {
       },
       onReady: (r) => {
         simResult.value = r
-        frame.value = r.frame
-        playIndex.value = r.frame.moveIndex
+        viewer.value?.setStockGrid(r.grid, r.heights)
+        playIndex.value = r.moveIndex
+        shownIndex.value = r.moveIndex
         simStatus.value = 'ready'
       },
       onFrame: (f) => {
-        frame.value = f
+        viewer.value?.applyStockRect(f.rect, f.data)
+        shownIndex.value = f.moveIndex
+        const requestToShownMs = performance.now() - seekRequestedAt
+        // The render call runs on the next animation frame; read its time then.
+        requestAnimationFrame(() => {
+          frameTiming.value = {
+            workerMs: f.workerMs,
+            requestToShownMs,
+            renderMs: viewer.value?.lastRenderMs() ?? 0,
+          }
+        })
       },
       onError: (message) => {
         simError.value = message
@@ -125,6 +149,7 @@ function startSimulation() {
 function seek(index: number) {
   if (simStatus.value !== 'ready') return
   playIndex.value = index
+  seekRequestedAt = performance.now()
   simClient.seek(index)
 }
 
@@ -134,7 +159,9 @@ async function onFileChosen(event: Event) {
   if (!file) return
   loading.value = true
   error.value = null
-  simClient.stop()
+  // The old job goes away now, so a failed load never leaves its simulation on screen.
+  resetSimulation()
+  loaded.value = null
   try {
     const result = await parseFileInWorker(file)
     hiddenToolpaths.value = new Set()
@@ -196,6 +223,8 @@ function setAllToolpaths(visible: boolean) {
           :stock-source="stock?.source ?? null"
           :cell-size="cellSize"
           :cell-size-source="cellSizeSource"
+          :cell-size-problem="cellSizeError"
+          :frame-timing="frameTiming"
           @update:cell-size="onCellSize"
         />
         <ToolTable :tools="tools" @update="onToolsEdited" />
@@ -213,18 +242,19 @@ function setAllToolpaths(visible: boolean) {
     <main class="view">
       <div class="viewer-area">
         <ToolpathViewer
+          ref="viewer"
           :loaded="loaded"
           :stock-box="stockBox"
           :hidden-toolpaths="hiddenToolpaths"
           :rapids-visible="rapidsVisible"
-          :frame="frame"
           :tool-marker="toolMarker"
         />
       </div>
       <PlaybackControls
         v-if="loaded && simStatus === 'ready'"
         :move-count="loaded.job.moves.count"
-        :index="playIndex"
+        :shown-index="shownIndex"
+        :requested-index="playIndex"
         :current-line="currentLine"
         :toolpaths="toolpathStarts"
         @seek="seek"

@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { cutterProfile, type CutterShapeKind } from '../engine/toolShape'
-import type { ToolField, ToolSetup, ValueSource } from '../engine/toolTable'
+import type { CutterShapeKind } from '../engine/toolShape'
+import {
+  toolProblems,
+  withToolKind,
+  withToolValue,
+  type ToolField,
+  type ToolSetup,
+  type ValueSource,
+} from '../engine/toolTable'
+import { parseDecimalInput } from '../ui/decimalInput'
 
 const props = defineProps<{ tools: ToolSetup[] }>()
 const emit = defineEmits<{ update: [tools: ToolSetup[]] }>()
@@ -24,20 +32,23 @@ const NUMBER_FIELDS: { field: NumberField; label: string; applies: (t: ToolSetup
   { field: 'tipAngle', label: 'Tip angle (deg)', applies: (t) => t.kind === 'drill' || t.kind === 'V-bit' },
 ]
 
-function problem(t: ToolSetup): string | null {
-  const p = cutterProfile(t)
-  return typeof p === 'string' ? p : null
+const shown = (v: number) => (Number.isFinite(v) ? String(v) : '')
+
+function replace(number: number, change: (t: ToolSetup) => ToolSetup) {
+  emit(
+    'update',
+    props.tools.map((t) => (t.number === number ? change(t) : t)),
+  )
 }
 
-function edit(number: number, field: ToolField, value: string) {
-  const next = props.tools.map((t) => {
-    if (t.number !== number) return t
-    const copy: ToolSetup = { ...t, sources: { ...t.sources, [field]: 'user' } }
-    if (field === 'kind') copy.kind = value as CutterShapeKind
-    else copy[field] = Number(value)
-    return copy
-  })
-  emit('update', next)
+function onKind(number: number, event: Event) {
+  const kind = (event.target as HTMLSelectElement).value as CutterShapeKind
+  replace(number, (t) => withToolKind(t, kind))
+}
+
+function onValue(number: number, field: NumberField, event: Event) {
+  const value = parseDecimalInput((event.target as HTMLInputElement).value)
+  replace(number, (t) => withToolValue(t, field, value))
 }
 </script>
 
@@ -50,10 +61,10 @@ function edit(number: number, field: ToolField, value: string) {
       <div class="title">
         <strong>T{{ t.number }}</strong> <span class="name">{{ t.name }}</span>
       </div>
-      <p v-if="problem(t)" class="problem">Not simulated: {{ problem(t) }}</p>
+      <p v-for="p in toolProblems(t)" :key="p" class="problem">{{ p }}</p>
       <div class="fields">
         <label>Type</label>
-        <select :value="t.kind" @change="edit(t.number, 'kind', ($event.target as HTMLSelectElement).value)">
+        <select :value="t.kind" @change="onKind(t.number, $event)">
           <option v-for="k in KINDS" :key="k" :value="k">{{ k }}</option>
         </select>
         <span class="source" :class="t.sources.kind">{{ SOURCE_LABEL[t.sources.kind] }}</span>
@@ -61,14 +72,23 @@ function edit(number: number, field: ToolField, value: string) {
           <template v-if="f.applies(t)">
             <label>{{ f.label }}</label>
             <input
-              type="number"
-              step="any"
-              min="0"
-              :value="t[f.field]"
-              @change="edit(t.number, f.field, ($event.target as HTMLInputElement).value)"
+              type="text"
+              inputmode="decimal"
+              :value="shown(t[f.field])"
+              @change="onValue(t.number, f.field, $event)"
             />
             <span class="source" :class="t.sources[f.field]">{{ SOURCE_LABEL[t.sources[f.field]] }}</span>
           </template>
+        </template>
+        <template v-if="t.shankDiameter !== null">
+          <label>Shank diameter (mm)</label>
+          <span>{{ t.shankDiameter }}</span>
+          <span class="source header">header</span>
+        </template>
+        <template v-if="t.studioType !== null">
+          <label>Makera Studio type</label>
+          <span>{{ t.studioType }}</span>
+          <span class="source header">header</span>
         </template>
       </div>
     </div>

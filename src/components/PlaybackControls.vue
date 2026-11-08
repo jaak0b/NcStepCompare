@@ -3,9 +3,11 @@ import { onBeforeUnmount, ref } from 'vue'
 
 const props = defineProps<{
   moveCount: number
-  /** The view shows the state after moves [0, index). */
-  index: number
-  /** Source line of the move just completed, or null at the start. */
+  /** Move index the view currently shows: the state after moves [0, shownIndex). */
+  shownIndex: number
+  /** Move index last asked for; equals shownIndex once that frame has arrived. */
+  requestedIndex: number
+  /** Source line of the move just completed in the shown state, or null at the start. */
   currentLine: number | null
   toolpaths: { number: number; name: string; firstMove: number }[]
 }>()
@@ -15,29 +17,27 @@ const SPEEDS = [100, 1000, 10000, 100000]
 const playing = ref(false)
 const speed = ref(1000)
 let handle: number | null = null
-let last = 0
-let carry = 0
+let lastRequestAt = 0
 
+// Closed loop: the next step is requested only after the previous frame is on screen, sized by
+// the time that has passed, so playback never runs ahead of what the simulation can show.
 function tick(now: number) {
-  const dt = (now - last) / 1000
-  last = now
-  carry += dt * speed.value
-  const step = Math.floor(carry)
-  carry -= step
-  const next = Math.min(props.moveCount, props.index + step)
-  if (step > 0) emit('seek', next)
-  if (next >= props.moveCount) {
-    pause()
-    return
+  if (props.shownIndex === props.requestedIndex) {
+    if (props.shownIndex >= props.moveCount) {
+      pause()
+      return
+    }
+    const step = Math.max(1, Math.floor(((now - lastRequestAt) / 1000) * speed.value))
+    lastRequestAt = now
+    emit('seek', Math.min(props.moveCount, props.shownIndex + step))
   }
   handle = requestAnimationFrame(tick)
 }
 
 function play() {
-  if (props.index >= props.moveCount) emit('seek', 0)
+  if (props.shownIndex >= props.moveCount) emit('seek', 0)
   playing.value = true
-  carry = 0
-  last = performance.now()
+  lastRequestAt = performance.now()
   handle = requestAnimationFrame(tick)
 }
 
@@ -69,12 +69,12 @@ onBeforeUnmount(pause)
       min="0"
       :max="moveCount"
       step="1"
-      :value="index"
+      :value="requestedIndex"
       aria-label="Position in the job"
       @input="onSlider"
     />
     <span class="position">
-      Move {{ index.toLocaleString() }} of {{ moveCount.toLocaleString() }}<template v-if="currentLine !== null">
+      Move {{ shownIndex.toLocaleString() }} of {{ moveCount.toLocaleString() }}<template v-if="currentLine !== null">
         (line {{ currentLine.toLocaleString() }})</template
       >
     </span>

@@ -1,17 +1,26 @@
-import type { SimulationMoves } from '../engine/simulation'
+import type { CellRect, SimulationMoves } from '../engine/simulation'
 import type { Box3D } from '../engine/stock'
 import type { CutterShape } from '../engine/toolShape'
 
-export interface SimulationFrame {
-  /** The grid shows the state after moves [0, moveIndex). */
-  moveIndex: number
+/** Size and placement of the simulation grid, in work coordinates. */
+export interface GridInfo {
   nx: number
   ny: number
-  /** Display cell size in mm (the simulation grid may be finer). */
   cellSize: number
   originX: number
   originY: number
-  heights: Float32Array
+  /** The stock box; the grid's last cells may overhang its X and Y edges. */
+  stock: Box3D
+}
+
+/** Changed part of the grid: heights of the cells in `rect`, row by row. */
+export interface SimulationFrame {
+  /** The grid shows the state after moves [0, moveIndex). */
+  moveIndex: number
+  rect: CellRect
+  data: Float32Array
+  /** Time the worker spent on this frame (seek and copy), measured. */
+  workerMs: number
 }
 
 export type SimulationRequest =
@@ -21,23 +30,23 @@ export type SimulationRequest =
       cellSize: number
       moves: SimulationMoves
       tools: { number: number; shape: CutterShape }[]
-      /** Largest display grid side, in cells. */
-      displayMaxCells: number
     }
   | { type: 'seek'; moveIndex: number }
 
 export interface SimulationReady {
   type: 'ready'
   simMs: number
-  gridNx: number
-  gridNy: number
-  cellSize: number
+  grid: GridInfo
+  /** The whole grid after the last move. */
+  heights: Float32Array
+  moveIndex: number
   checkpointCount: number
   checkpointBytes: number
   removedVolume: Float32Array
   maxCutDepth: Float32Array
   unsimulatedMoveCount: number
-  frame: SimulationFrame
+  /** Tools whose shape is not valid, with the reason; their moves are not simulated. */
+  toolProblems: { number: number; problem: string }[]
 }
 
 export type SimulationResponse =

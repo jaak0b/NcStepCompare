@@ -12,9 +12,6 @@ export interface SimulationHandlers {
   onError(message: string): void
 }
 
-/** Largest display grid side in cells; the simulation grid itself keeps its full resolution. */
-export const DISPLAY_MAX_CELLS = 600
-
 export class SimulationClient {
   private worker: Worker | null = null
 
@@ -48,7 +45,6 @@ export class SimulationClient {
       stock,
       cellSize,
       tools,
-      displayMaxCells: DISPLAY_MAX_CELLS,
       moves: {
         count: moves.count,
         start: moves.start.slice(),

@@ -4,12 +4,13 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MoveType, type MoveList } from '../engine/moveList'
 import type { Box3D } from '../engine/stock'
-import type { SimulationFrame } from '../workers/simulationMessages'
+import type { CellRect } from '../engine/simulation'
+import type { GridInfo } from '../workers/simulationMessages'
+import { StockSurface } from './stockSurface'
 
 const CUTTING_COLOR = 0x1f6fd1
 const RAPID_COLOR = 0xe8590c
 const STOCK_COLOR = 0x6b7280
-const MACHINED_STOCK_COLOR = 0xb8bcc2
 const TOOL_MARKER_COLOR = 0xd9a400
 
 export interface ToolMarker {
@@ -38,12 +39,9 @@ export class ToolpathScene {
     opacity: 0.6,
   })
   private readonly axes = new THREE.AxesHelper(10)
-  private readonly heightMaterial = new THREE.MeshLambertMaterial({
-    color: MACHINED_STOCK_COLOR,
-    side: THREE.DoubleSide,
-  })
-  private heightMesh: THREE.Mesh | null = null
-  private heightDims = ''
+  private stockSurface: StockSurface | null = null
+  /** CPU time of the last renderer.render call in ms, measured (GPU work runs after it). */
+  lastRenderMs = 0
   private readonly toolMarker: THREE.Mesh
   private hiddenToolpaths = new Set<number>()
   private rapidsVisible = true
@@ -148,55 +146,22 @@ export class ToolpathScene {
     this.fitCamera()
   }
 
-  /** Shows the machined stock surface from a simulation frame, or removes it for null. */
-  setHeightField(frame: SimulationFrame | null): void {
-    if (!frame) {
-      this.removeHeightMesh()
-      this.requestRender()
-      return
-    }
-    const { nx, ny, cellSize, originX, originY, heights } = frame
-    const dims = `${nx}x${ny}@${cellSize},${originX},${originY}`
-    if (!this.heightMesh || dims !== this.heightDims) {
-      this.removeHeightMesh()
-      const positions = new Float32Array(nx * ny * 3)
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          const k = (j * nx + i) * 3
-          positions[k] = originX + (i + 0.5) * cellSize
-          positions[k + 1] = originY + (j + 0.5) * cellSize
-        }
-      }
-      const index = new Uint32Array(Math.max(0, (nx - 1) * (ny - 1) * 6))
-      let n = 0
-      for (let j = 0; j < ny - 1; j++) {
-        for (let i = 0; i < nx - 1; i++) {
-          const a = j * nx + i
-          const b = a + 1
-          const c = a + nx + 1
-          const d = a + nx
-          index[n++] = a
-          index[n++] = b
-          index[n++] = c
-          index[n++] = a
-          index[n++] = c
-          index[n++] = d
-        }
-      }
-      const geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-      geometry.setIndex(new THREE.BufferAttribute(index, 1))
-      this.heightMesh = new THREE.Mesh(geometry, this.heightMaterial)
-      this.heightDims = dims
-      this.scene.add(this.heightMesh)
-    }
-    const geometry = this.heightMesh.geometry
-    const position = geometry.getAttribute('position') as THREE.BufferAttribute
-    const arr = position.array as Float32Array
-    for (let k = 0; k < nx * ny; k++) arr[k * 3 + 2] = heights[k]
-    position.needsUpdate = true
-    geometry.computeVertexNormals()
-    geometry.computeBoundingSphere()
+  /** Shows the machined stock from the whole simulation grid. */
+  setStockGrid(grid: GridInfo, heights: Float32Array): void {
+    this.clearStock()
+    this.stockSurface = new StockSurface(this.renderer, this.scene, grid, heights)
+    this.requestRender()
+  }
+
+  /** Updates the changed cells of the machined stock. */
+  applyStockRect(rect: CellRect, data: Float32Array): void {
+    this.stockSurface?.applyRect(rect, data)
+    this.requestRender()
+  }
+
+  clearStock(): void {
+    this.stockSurface?.dispose()
+    this.stockSurface = null
     this.requestRender()
   }
 
@@ -225,12 +190,11 @@ export class ToolpathScene {
   dispose(): void {
     this.resizeObserver.disconnect()
     this.clearJob()
-    // clearJob schedules a frame; cancel it so nothing renders into the disposed renderer.
+    this.clearStock()
+    // Clearing schedules a frame; cancel it so nothing renders into the disposed renderer.
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.frameHandle = null
     this.axes.dispose()
-    this.removeHeightMesh()
-    this.heightMaterial.dispose()
     this.toolMarker.geometry.dispose()
     ;(this.toolMarker.material as THREE.Material).dispose()
     this.controls.dispose()
@@ -257,14 +221,6 @@ export class ToolpathScene {
       if (entry.rapid) entry.rapid.visible = shown && this.rapidsVisible
     }
     this.requestRender()
-  }
-
-  private removeHeightMesh(): void {
-    if (!this.heightMesh) return
-    this.scene.remove(this.heightMesh)
-    this.heightMesh.geometry.dispose()
-    this.heightMesh = null
-    this.heightDims = ''
   }
 
   private clearJob(): void {
@@ -316,7 +272,9 @@ export class ToolpathScene {
     if (this.frameHandle !== null) return
     this.frameHandle = requestAnimationFrame(() => {
       this.frameHandle = null
+      const t0 = performance.now()
       this.renderer.render(this.scene, this.camera)
+      this.lastRenderMs = performance.now() - t0
     })
   }
 }

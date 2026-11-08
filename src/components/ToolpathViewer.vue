@@ -3,14 +3,14 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Box3D } from '../engine/stock'
 import { ToolpathScene, type ToolMarker } from '../viewer/toolpathScene'
 import type { LoadedJob } from '../workers/parseMessages'
-import type { SimulationFrame } from '../workers/simulationMessages'
+import type { CellRect } from '../engine/simulation'
+import type { GridInfo } from '../workers/simulationMessages'
 
 const props = defineProps<{
   loaded: LoadedJob | null
   stockBox: Box3D | null
   hiddenToolpaths: Set<number>
   rapidsVisible: boolean
-  frame: SimulationFrame | null
   toolMarker: ToolMarker | null
 }>()
 
@@ -32,7 +32,6 @@ function showJob() {
   scene.setJob(props.loaded.job.moves, props.stockBox, props.loaded.summary.bounds)
   scene.setHiddenToolpaths(props.hiddenToolpaths)
   scene.setRapidsVisible(props.rapidsVisible)
-  scene.setHeightField(props.frame)
   showMarker()
 }
 
@@ -46,11 +45,15 @@ watch(
   () => [...props.hiddenToolpaths],
   () => scene?.setHiddenToolpaths(props.hiddenToolpaths),
 )
-watch(
-  () => props.frame,
-  (f) => scene?.setHeightField(f),
-)
 watch(() => props.toolMarker, showMarker)
+
+// The machined stock is large typed data, so the parent pushes it in directly instead of via props.
+defineExpose({
+  setStockGrid: (grid: GridInfo, heights: Float32Array) => scene?.setStockGrid(grid, heights),
+  applyStockRect: (rect: CellRect, data: Float32Array) => scene?.applyStockRect(rect, data),
+  clearStock: () => scene?.clearStock(),
+  lastRenderMs: () => scene?.lastRenderMs ?? 0,
+})
 watch(
   () => props.rapidsVisible,
   (v) => scene?.setRapidsVisible(v),
