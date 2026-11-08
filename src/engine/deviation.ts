@@ -3,9 +3,11 @@
 // Sign convention: deviation = machined height - model height (vertical, in mm).
 //  - Below zero: cut deeper than the model.
 //  - Above zero: material left above the model.
-// Cells outside every part outline have no deviation. A through-hole cell (inside the outline, no
-// material in the model) should be cut down to the bottom of the part it belongs to: its deviation
-// is the material left above that bottom, and a cut below it is not a gouge of the part.
+// Outside every part outline the expected surface is the stock bottom: material left there (the
+// cut-out frame, tabs, a sliver next to a wall) is leftover, and a cut there is never a gouge (its
+// depth below the stock is a matter of the spoilboard, not of the part). A through-hole cell (inside
+// the outline, no material in the model) should be cut down to the bottom of the part it belongs to:
+// its deviation is the material left above that bottom, and a cut below it is not a gouge of the part.
 //
 // Gouge and leftover are decided by distance, not by the vertical deviation alone. At a vertical
 // wall a lateral offset far smaller than the tolerance changes a cell's height by the whole wall
@@ -15,8 +17,10 @@
 // the height field this is flat grey-scale erosion and dilation with a square window:
 //   gouge limit(c)    = min over cells q with |di|, |dj| <= n of model(q) - tol
 //   leftover limit(c) = max over the same window of model(q) + tol,   n = floor(tol / cellSize)
-// where cells without material count as -infinity for the gouge limit, and a through-hole cell
-// counts as its part's bottom for the leftover limit. A cell is a gouge when the machined height is
+// where cells without material count as -infinity for the gouge limit, and for the leftover limit a
+// through-hole cell counts as its part's bottom and a cell outside the outlines as the stock bottom.
+// So cells outside the outline have the same tolerance zone as those inside: a wall within tolerance
+// of the model wall is within tolerance on both sides. A cell is a gouge when the machined height is
 // below its gouge limit, and leftover when above its leftover limit.
 //
 // A square window is separable, so each limit is a sliding minimum or maximum along rows and then
@@ -40,45 +44,20 @@ export interface Tolerances {
 }
 
 /**
- * Vertical deviation of one cell in mm, or null outside every part outline. `throughFloor` is the
- * bottom Z the cell must be cut down to when it lies in a through-hole.
+ * Vertical deviation of one cell in mm. `throughFloor` is the bottom Z the cell must be cut down to
+ * when it lies in a through-hole; outside every part outline that is `stockBottom`. Below either
+ * bottom the deviation is 0: such a cut is not a gouge of the part.
  */
-export function cellDeviation(machined: number, model: number, throughFloor: number): number | null {
-  if (Number.isNaN(model)) return null
+export function cellDeviation(machined: number, model: number, throughFloor: number, stockBottom: number): number {
+  if (Number.isNaN(model)) return Math.max(0, machined - stockBottom)
   if (model === MODEL_THROUGH) return Math.max(0, machined - throughFloor)
   return machined - model
 }
 
-/** Cell rectangle, inclusive. */
-export interface CellBounds {
-  i0: number
-  j0: number
-  i1: number
-  j1: number
-}
-
-/** Smallest cell rectangle holding every cell inside a part outline, or null when there is none. */
-export function footprintBounds(g: GridGeometry, model: ModelGrid): CellBounds | null {
-  let i0 = g.nx
-  let j0 = g.ny
-  let i1 = -1
-  let j1 = -1
-  for (let j = 0; j < g.ny; j++) {
-    for (let i = 0; i < g.nx; i++) {
-      if (Number.isNaN(model.top[j * g.nx + i])) continue
-      if (i < i0) i0 = i
-      if (i > i1) i1 = i
-      if (j < j0) j0 = j
-      if (j > j1) j1 = j
-    }
-  }
-  return i1 < 0 ? null : { i0, j0, i1, j1 }
-}
-
 export interface ToleranceLimits {
-  /** Per cell: machined heights below this are gouges. NaN outside the parts. */
+  /** Per cell: machined heights below this are gouges (-Infinity where none is possible). */
   gougeBelow: Float32Array
-  /** Per cell: machined heights above this are leftover. NaN outside the parts. */
+  /** Per cell: machined heights above this are leftover. */
   leftoverAbove: Float32Array
 }
 
@@ -128,46 +107,22 @@ function squareFilter(a: Float32Array, w: number, h: number, n: number, takeMin:
 /** Window half-size in cells for a tolerance; the 1e-9 only absorbs rounding when tol is a multiple. */
 const windowCells = (cellSize: number, tol: number) => Math.floor(tol / cellSize + 1e-9)
 
-/** Gouge and leftover limits per cell for the model grid and tolerances. */
-export function toleranceLimits(
-  g: GridGeometry,
-  model: ModelGrid,
-  tol: Tolerances,
-  bounds: CellBounds | null = footprintBounds(g, model),
-): ToleranceLimits {
-  const { nx, ny } = g
-  const gougeBelow = new Float32Array(nx * ny).fill(Number.NaN)
-  const leftoverAbove = new Float32Array(nx * ny).fill(Number.NaN)
-  if (!bounds) return { gougeBelow, leftoverAbove }
-  const ng = windowCells(g.cellSize, tol.gouge)
-  const nl = windowCells(g.cellSize, tol.leftover)
-  // Work rectangle: the footprint plus every cell a window of a footprint cell reaches.
-  const m = Math.max(ng, nl)
-  const ri0 = Math.max(0, bounds.i0 - m)
-  const rj0 = Math.max(0, bounds.j0 - m)
-  const w = Math.min(nx - 1, bounds.i1 + m) - ri0 + 1
-  const h = Math.min(ny - 1, bounds.j1 + m) - rj0 + 1
-  const gougeBase = new Float32Array(w * h)
-  const leftoverBase = new Float32Array(w * h)
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const c = (rj0 + j) * nx + ri0 + i
-      const top = model.top[c]
-      const solid = !Number.isNaN(top) && top !== MODEL_THROUGH
-      gougeBase[j * w + i] = solid ? top : -Infinity
-      leftoverBase[j * w + i] = solid ? top : top === MODEL_THROUGH ? model.throughFloor[c] : -Infinity
-    }
+/** Gouge and leftover limits per cell of the whole grid for the model grid and tolerances. */
+export function toleranceLimits(g: GridGeometry, model: ModelGrid, tol: Tolerances, stockBottom: number): ToleranceLimits {
+  const n = g.nx * g.ny
+  const gougeBase = new Float32Array(n)
+  const leftoverBase = new Float32Array(n)
+  for (let c = 0; c < n; c++) {
+    const top = model.top[c]
+    const solid = !Number.isNaN(top) && top !== MODEL_THROUGH
+    gougeBase[c] = solid ? top : -Infinity
+    leftoverBase[c] = solid ? top : top === MODEL_THROUGH ? model.throughFloor[c] : stockBottom
   }
-  const lowest = squareFilter(gougeBase, w, h, ng, true)
-  const highest = squareFilter(leftoverBase, w, h, nl, false)
-  for (let j = bounds.j0; j <= bounds.j1; j++) {
-    for (let i = bounds.i0; i <= bounds.i1; i++) {
-      const c = j * nx + i
-      if (Number.isNaN(model.top[c])) continue
-      const k = (j - rj0) * w + (i - ri0)
-      gougeBelow[c] = lowest[k] - tol.gouge
-      leftoverAbove[c] = highest[k] + tol.leftover
-    }
+  const gougeBelow = squareFilter(gougeBase, g.nx, g.ny, windowCells(g.cellSize, tol.gouge), true)
+  const leftoverAbove = squareFilter(leftoverBase, g.nx, g.ny, windowCells(g.cellSize, tol.leftover), false)
+  for (let c = 0; c < n; c++) {
+    gougeBelow[c] -= tol.gouge
+    leftoverAbove[c] += tol.leftover
   }
   return { gougeBelow, leftoverAbove }
 }
@@ -185,11 +140,14 @@ export interface DeviationSummary {
   footprintCells: number
   /** Cells cut below the gouge tolerance zone. */
   gougeCells: number
-  /** Cells with material above the leftover tolerance zone. */
+  /** Cells with material above the leftover tolerance zone, inside and outside the part outlines. */
   leftoverCells: number
   /** Largest vertical depth below the model among gouge cells, mm (0 when none). */
   maxGougeDepth: number
-  /** Largest vertical height above the model among leftover cells, mm (0 when none). */
+  /**
+   * Largest vertical height among leftover cells above the model, or outside the part outlines above
+   * the stock bottom, mm (0 when none).
+   */
   maxLeftover: number
 }
 
@@ -203,13 +161,12 @@ export interface ChangedCells {
 
 /**
  * Deviation summary of a changing machined grid, kept up to date from the changed cells only. Per
- * footprint cell it stores the current gouge depth and leftover height (0 when within tolerance), so
- * an update adjusts the counts by difference. A maximum is rescanned (over these stored values, not
- * the grid) only when the cell that held it decreased.
+ * cell it stores the current gouge depth and leftover height (0 when within tolerance), so an update
+ * adjusts the counts by difference. A maximum is rescanned (over these stored values, not the grid)
+ * only when the cell that held it decreased.
  */
 export class DeviationTracker {
-  private readonly w: number
-  private readonly h: number
+  private readonly ny: number
   private readonly gougeDepth: Float32Array
   private readonly leftoverHeight: Float32Array
   private footprint = 0
@@ -222,43 +179,35 @@ export class DeviationTracker {
     private readonly nx: number,
     private readonly model: ModelGrid,
     private readonly limits: ToleranceLimits,
-    private readonly bounds: CellBounds | null,
+    private readonly stockBottom: number,
     machined: Float32Array,
   ) {
-    this.w = bounds ? bounds.i1 - bounds.i0 + 1 : 0
-    this.h = bounds ? bounds.j1 - bounds.j0 + 1 : 0
-    this.gougeDepth = new Float32Array(this.w * this.h)
-    this.leftoverHeight = new Float32Array(this.w * this.h)
-    if (!bounds) return
-    for (let j = bounds.j0; j <= bounds.j1; j++) {
-      for (let i = bounds.i0; i <= bounds.i1; i++) if (!Number.isNaN(model.top[j * nx + i])) this.footprint++
-    }
-    this.update(machined, { minI: bounds.i0, maxI: bounds.i1, minJ: bounds.j0, maxJ: bounds.j1 })
+    this.ny = machined.length / nx
+    this.gougeDepth = new Float32Array(machined.length)
+    this.leftoverHeight = new Float32Array(machined.length)
+    for (const top of model.top) if (!Number.isNaN(top)) this.footprint++
+    this.update(machined, { minI: 0, maxI: nx - 1, minJ: 0, maxJ: this.ny - 1 })
   }
 
   update(machined: Float32Array, changed: ChangedCells): void {
-    const b = this.bounds
-    if (!b) return
-    const i0 = Math.max(changed.minI, b.i0)
-    const i1 = Math.min(changed.maxI, b.i1)
-    const j0 = Math.max(changed.minJ, b.j0)
-    const j1 = Math.min(changed.maxJ, b.j1)
+    const i0 = Math.max(changed.minI, 0)
+    const i1 = Math.min(changed.maxI, this.nx - 1)
+    const j0 = Math.max(changed.minJ, 0)
+    const j1 = Math.min(changed.maxJ, this.ny - 1)
     let rescanGouge = false
     let rescanLeftover = false
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
         const c = j * this.nx + i
-        const d = cellDeviation(machined[c], this.model.top[c], this.model.throughFloor[c])
-        if (d === null) continue
-        const k = (j - b.j0) * this.w + (i - b.i0)
+        const d = cellDeviation(machined[c], this.model.top[c], this.model.throughFloor[c], this.stockBottom)
         const gouge = machined[c] < this.limits.gougeBelow[c] ? -d : 0
         const left = machined[c] > this.limits.leftoverAbove[c] ? d : 0
-        const oldGouge = this.gougeDepth[k]
-        const oldLeft = this.leftoverHeight[k]
+        const oldGouge = this.gougeDepth[c]
+        const oldLeft = this.leftoverHeight[c]
         this.gougeCells += (gouge > 0 ? 1 : 0) - (oldGouge > 0 ? 1 : 0)
         this.leftoverCells += (left > 0 ? 1 : 0) - (oldLeft > 0 ? 1 : 0)
-        this.gougeDepth[k] = gouge
-        this.leftoverHeight[k] = left
+        this.gougeDepth[c] = gouge
+        this.leftoverHeight[c] = left
         if (gouge > this.maxGouge) this.maxGouge = gouge
         else if (oldGouge === this.maxGouge && gouge < oldGouge) rescanGouge = true
         if (left > this.maxLeftover) this.maxLeftover = left

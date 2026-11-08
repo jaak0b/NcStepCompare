@@ -85,9 +85,9 @@ const cells = (n: number) => n.toLocaleString('en-US')
         <dd>{{ cells(deviation.gougeCells) }}</dd>
         <dt>Deepest gouge below the model (measured)</dt>
         <dd>{{ deviation.maxGougeDepth.toFixed(3) }} mm</dd>
-        <dt>Leftover cells (measured)</dt>
+        <dt>Leftover cells, inside and outside the part outlines (measured)</dt>
         <dd>{{ cells(deviation.leftoverCells) }}</dd>
-        <dt>Highest leftover above the model (measured)</dt>
+        <dt>Highest leftover above the model or the stock bottom (measured)</dt>
         <dd>{{ deviation.maxLeftover.toFixed(3) }} mm</dd>
         <dt>STEP tessellation deviation (calculated, a tenth of the smaller tolerance)</dt>
         <dd>{{ deflection.toFixed(4) }} mm</dd>
@@ -102,11 +102,14 @@ const cells = (n: number) => n.toLocaleString('en-US')
         A cell is a gouge or leftover when the machined surface is farther than the tolerance from the model
         surface along X, Y and Z. Depths are measured vertically.
       </p>
+      <p class="note">
+        Outside the part outlines the expected surface is the stock bottom. Material left there, such as
+        tabs or the cut-out frame, counts as leftover; a cut there is never a gouge.
+      </p>
       <div class="legend">
         <span><i :style="{ background: DEVIATION_COLORS.gouge }"></i>Gouge: cut deeper than the model</span>
         <span><i :style="{ background: DEVIATION_COLORS.leftover }"></i>Leftover: material above the model</span>
         <span><i :style="{ background: DEVIATION_COLORS.within }"></i>Within tolerance</span>
-        <span><i class="outside"></i>Outside the parts</span>
       </div>
     </template>
   </section>
@@ -157,8 +160,5 @@ dd input {
   margin-right: 4px;
   vertical-align: middle;
   border-radius: 2px;
-}
-.legend i.outside {
-  background: #b8bcc2;
 }
 </style>

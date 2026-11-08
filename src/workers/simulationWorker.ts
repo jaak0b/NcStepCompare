@@ -3,7 +3,7 @@
 // parts, because that needs the height grid: the model grid, the tolerance limits, the deviation
 // summary of each shown frame, and the auto-orient ranking against the final stock.
 import { autoOrient as rankPlacements } from '../engine/autoOrient'
-import { DeviationTracker, footprintBounds, toleranceLimits } from '../engine/deviation'
+import { DeviationTracker, toleranceLimits } from '../engine/deviation'
 import { mergePartGrids, rasterizePart } from '../engine/modelGrid'
 import { MaterialSimulation, planCheckpoints } from '../engine/simulation'
 import { cutterProfile, type CutterProfile } from '../engine/toolShape'
@@ -132,10 +132,9 @@ function runCompare() {
       req.parts.map((p) => rasterizePart(g, p.positions, p.indices)),
     )
     const t1 = performance.now()
-    const bounds = footprintBounds(g, model)
-    const limits = toleranceLimits(g, model, req.tolerances, bounds)
+    const limits = toleranceLimits(g, model, req.tolerances, g.bottom)
     const t2 = performance.now()
-    comparison = new DeviationTracker(g.nx, model, limits, bounds, g.heights)
+    comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights)
     const interleaved = new Float32Array(g.nx * g.ny * 2)
     for (let c = 0; c < g.nx * g.ny; c++) {
       interleaved[c * 2] = limits.gougeBelow[c]

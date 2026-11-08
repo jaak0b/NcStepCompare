@@ -18,6 +18,13 @@
 //
 // Playback uploads only the changed rectangle of cells into the texture.
 //
+// With STEP parts placed, a second texture holds two heights per cell from the comparison: below the
+// first the cell is a gouge, above the second it is leftover. The fragment shader compares the shown
+// machined height with them, so the deviation colours follow playback with no extra work. Each
+// fragment takes the class of the highest of the cells around it, so a wall is coloured by its
+// material side. Cells outside the part outlines are compared with the stock bottom, so material
+// left there shows as leftover.
+//
 // Drawing cost is bounded per frame with chunked level of detail (Ulrich, "Rendering massive
 // terrains using chunked level of detail control", 2002), driven by a screen-space error bound:
 // - Per-tile frustum culling: each tile gets a bounding box from the min and max height of its
@@ -40,8 +47,7 @@ const TILE = 128
 const MAX_QUAD_PX = 1
 const LEVELS = Math.log2(TILE) + 1
 const STOCK_COLOR = new THREE.Color(0xb8bcc2)
-/** Texture stand-ins for values a float texture lookup should not carry. */
-const OUTSIDE_PARTS = 1e30
+/** Texture stand-in for -Infinity (no gouge limit), which a float texture lookup should not carry. */
 const NO_LIMIT = -1e30
 
 const COMMON = /* glsl */ `
@@ -183,10 +189,7 @@ void main() {
       }
     }
     vec2 limit = texelFetch(uLimits, c, 0).rg;
-    // Outside every part the texture holds 1e30 (OUTSIDE_PARTS).
-    if (limit.g < 1e29) {
-      color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
-    }
+    color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
   }
 #endif
   vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
@@ -261,7 +264,7 @@ export class StockSurface {
     this.stepTexture.generateMipmaps = false
     this.stepTexture.needsUpdate = true
 
-    this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array([OUTSIDE_PARTS, OUTSIDE_PARTS]), 1, 1)
+    this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
     this.uniforms = {
       uHeights: { value: this.texture },
       uLimits: { value: this.limitsTexture },
@@ -406,19 +409,19 @@ export class StockSurface {
   }
 
   /**
-   * Shows the comparison: per cell, interleaved, the gouge and leftover limit heights (NaN outside
-   * the parts, -Infinity for no gouge limit). Null shows plain stock.
+   * Shows the comparison: per cell, interleaved, the gouge and leftover limit heights (-Infinity for
+   * no gouge limit). Null shows plain stock.
    */
   setLimits(limits: Float32Array | null): void {
     this.limitsTexture.dispose()
     if (!limits) {
-      this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array([OUTSIDE_PARTS, OUTSIDE_PARTS]), 1, 1)
+      this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
       this.uniforms.uCompare.value = false
     } else {
       const data = new Float32Array(limits.length)
       for (let k = 0; k < limits.length; k++) {
         const v = limits[k]
-        data[k] = Number.isNaN(v) ? OUTSIDE_PARTS : v === -Infinity ? NO_LIMIT : v
+        data[k] = v === -Infinity ? NO_LIMIT : v
       }
       this.limitsTexture = StockSurface.limitsTextureFrom(data, this.grid.nx, this.grid.ny)
       this.uniforms.uCompare.value = true

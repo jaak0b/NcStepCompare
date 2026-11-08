@@ -173,7 +173,7 @@ function shiftedScore(g: Grid, machined: Float32Array, p: PartModelGrid, dx: num
       const gi = p.i0 + i + dx
       const gj = p.j0 + j + dy
       const inside = gi >= 0 && gj >= 0 && gi < g.nx && gj < g.ny
-      const d = cellDeviation(inside ? machined[gj * g.nx + gi] : g.bottom, top, p.bottomZ)!
+      const d = cellDeviation(inside ? machined[gj * g.nx + gi] : g.bottom, top, p.bottomZ, g.bottom)
       n++
       sum += Math.abs(d)
     }

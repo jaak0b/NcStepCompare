@@ -35,7 +35,7 @@ export interface ComparisonResult {
   requestId: number
   /**
    * Per cell, interleaved: the height below which the stock is a gouge, and the height above which
-   * it is leftover. NaN outside every part outline; -Infinity where no gouge is possible. Null when
+   * it is leftover; -Infinity where no gouge is possible (everywhere outside the part outlines). Null when
    * the request had no parts: the comparison is cleared.
    */
   limits: Float32Array | null

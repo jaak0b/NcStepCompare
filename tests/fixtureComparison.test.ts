@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 import { autoOrient } from '../src/engine/autoOrient'
-import { DeviationTracker, footprintBounds, toleranceLimits } from '../src/engine/deviation'
+import { DeviationTracker, toleranceLimits } from '../src/engine/deviation'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { mergePartGrids, rasterizePart } from '../src/engine/modelGrid'
 import { placePositions, type PartPlacement } from '../src/engine/partPlacement'
@@ -90,13 +90,12 @@ describe('backplate fixture against its STEP model', async () => {
   it('has gouges only at the 11 thread-milled M3 holes, each about 3.0 mm across', () => {
     const g = sim.grid
     const model = mergePartGrids(g, [rasterizePart(g, placePositions(part.mesh, placement), part.mesh.indices)])
-    const bounds = footprintBounds(g, model)
-    const limits = toleranceLimits(g, model, { gouge: 0.05, leftover: 0.1 }, bounds)
+    const limits = toleranceLimits(g, model, { gouge: 0.05, leftover: 0.1 }, g.bottom)
     const gouge = new Uint8Array(g.nx * g.ny)
     for (let c = 0; c < gouge.length; c++) gouge[c] = g.heights[c] < limits.gougeBelow[c] ? 1 : 0
 
     const clusters = clusterSizes(g.nx, g.ny, g.cellSize, gouge)
-    const summary = new DeviationTracker(g.nx, model, limits, bounds, g.heights).summary()
+    const summary = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights).summary()
 
     expect(summary.gougeCells).toBeGreaterThan(0)
     expect(clusters).toHaveLength(11)
