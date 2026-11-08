@@ -20,8 +20,9 @@
 //
 // With STEP parts placed, a second texture holds two heights per cell from the comparison: below the
 // first the cell is a gouge, above the second it is leftover. The fragment shader compares the shown
-// machined height of its cell with them, so the deviation colours follow playback with no extra work.
-// Cells outside every part outline stay plain stock grey.
+// machined height with them, so the deviation colours follow playback with no extra work. Each
+// fragment takes the class of the highest of the cells around it, so a wall is coloured by its
+// material side. Cells outside every part outline stay plain stock grey.
 import * as THREE from 'three'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
@@ -116,13 +117,25 @@ void main() {
   if (vHeight <= uBottom) discard;
 #endif
   vec3 color = uColor;
-#if !defined(SKIRT) && !defined(BOTTOM_FACE)
+#ifndef BOTTOM_FACE
   if (uCompare) {
-    ivec2 c = clamp(ivec2(floor((vXY - uOrigin) / uCellSize)), ivec2(0), uGridSize - 1);
+    // A fragment lies between the centres of up to 2 x 2 cells. It takes the class of the highest of
+    // them: a wall is the slope from a high cell down to a low one, so the wall shows the material
+    // side's colour over its full height (part walls, hole walls and the side walls alike).
+    ivec2 base = ivec2(floor((vXY - uOrigin) / uCellSize - 0.5));
+    ivec2 c = clamp(base, ivec2(0), uGridSize - 1);
+    float h = texelFetch(uHeights, c, 0).r;
+    for (int k = 1; k < 4; k++) {
+      ivec2 n = clamp(base + ivec2(k & 1, k >> 1), ivec2(0), uGridSize - 1);
+      float hn = texelFetch(uHeights, n, 0).r;
+      if (hn > h) {
+        h = hn;
+        c = n;
+      }
+    }
     vec2 limit = texelFetch(uLimits, c, 0).rg;
     // Outside every part the texture holds 1e30 (OUTSIDE_PARTS).
     if (limit.g < 1e29) {
-      float h = texelFetch(uHeights, c, 0).r;
       color = h < limit.r ? uGougeColor : (h > limit.g ? uLeftoverColor : uWithinColor);
     }
   }
