@@ -10,9 +10,12 @@ export interface MakeraRecord {
   fields: Record<string, string>
 }
 
+export type StockShape = 'box' | 'cylinder' | 'unknown'
+
 export interface StockDefinition {
-  /** Studio's stock shape id, for example `cuboid`. */
-  shape: string
+  shape: StockShape
+  /** Studio's stock shape id as written, for example `cuboid`. */
+  studioShape: string
   /** Size along X in mm (Studio `length`). */
   lengthX: number
   /** Size along Y in mm (Studio `width`). */
@@ -24,7 +27,9 @@ export interface StockDefinition {
 }
 
 export interface WorkOriginDefinition {
-  /** Studio's preset name, for example `topFrontLeft`. */
+  /** Plain description of the preset, for example "Top, front left corner". */
+  description: string
+  /** Studio's preset name as written, for example `topFrontLeft`. */
   presetName: string
   /** Work origin position relative to the stock centre, in mm. */
   offsetFromStockCentre: { x: number; y: number; z: number }
@@ -98,6 +103,33 @@ export function parseMakeraRecord(line: string): MakeraRecord | null {
   return { type, fields }
 }
 
+const STOCK_SHAPE_BY_STUDIO_ID: Record<string, StockShape> = {
+  cuboid: 'box',
+  cylinder: 'cylinder',
+}
+
+/**
+ * Turns a Studio origin preset such as `topFrontLeft` into "Top, front left corner". Studio names
+ * them as a height (top, bottom, center) followed by a position on that face. Unrecognised names
+ * are returned as written.
+ */
+export function describeWorkOriginPreset(presetName: string): string {
+  const words = presetName.split(/(?=[A-Z])/).map((w) => w.toLowerCase())
+  const heights = ['top', 'bottom', 'center']
+  const positions = ['front', 'back', 'left', 'right', 'center']
+  if (words.length === 0 || !heights.includes(words[0]) || !words.slice(1).every((w) => positions.includes(w))) {
+    return presetName
+  }
+  const spell = (w: string) => (w === 'center' ? 'centre' : w)
+  const height = spell(words[0])
+  const rest = words.slice(1).map(spell)
+  const heightLabel = height.charAt(0).toUpperCase() + height.slice(1)
+  if (rest.length === 0) return heightLabel
+  if (rest.length === 1 && rest[0] === 'centre') return `${heightLabel}, centre`
+  const corner = rest.length === 2 && !rest.includes('centre')
+  return `${heightLabel}, ${rest.join(' ')}${corner ? ' corner' : ' edge'}`
+}
+
 const TOOL_KIND_BY_STUDIO_TYPE: Record<string, ToolKind> = {
   'flat end': 'flat end mill',
   'ball end': 'ball end',
@@ -129,7 +161,8 @@ export function applyMakeraRecord(header: MakeraHeader, record: MakeraRecord): s
   switch (record.type) {
     case 'STOCK':
       header.stock = {
-        shape: f.id ?? '',
+        shape: STOCK_SHAPE_BY_STUDIO_ID[(f.id ?? '').trim().toLowerCase()] ?? 'unknown',
+        studioShape: f.id ?? '',
         lengthX: optionalNum('length'),
         widthY: optionalNum('width'),
         heightZ: num('height'),
@@ -138,6 +171,7 @@ export function applyMakeraRecord(header: MakeraHeader, record: MakeraRecord): s
       break
     case 'ORIGIN':
       header.workOrigin = {
+        description: describeWorkOriginPreset(f.type_name ?? ''),
         presetName: f.type_name ?? '',
         offsetFromStockCentre: { x: num('x'), y: num('y'), z: num('z') },
       }

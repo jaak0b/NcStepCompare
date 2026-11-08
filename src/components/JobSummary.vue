@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NO_TOOLPATH } from '../engine/moveList'
+import type { StockShape } from '../engine/makeraHeader'
 import type { Box3D } from '../engine/stock'
 import type { LoadedJob } from '../workers/parseMessages'
 
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 }>()
 
 const MAX_WARNINGS_SHOWN = 200
+const STOCK_SHAPE_LABEL: Partial<Record<StockShape, string>> = { box: 'Box', cylinder: 'Cylinder' }
 
 const header = computed(() => props.loaded.job.header)
 const warnings = computed(() => props.loaded.job.warnings)
@@ -28,9 +30,10 @@ const range = (a: number, b: number) => `${a.toFixed(2)} to ${b.toFixed(2)} mm`
 const toolLabel = (n: number) => (n < 0 ? 'none' : `T${n}`)
 
 function duration(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.round(seconds % 60)
+  const total = Math.round(seconds)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
   return `${h} h ${m} min ${s} s`
 }
 
@@ -51,7 +54,7 @@ function toolpathName(number: number, name: string): string {
         <dd>{{ loaded.job.lineCount.toLocaleString() }}</dd>
         <dt>Moves (after arc flattening)</dt>
         <dd>{{ loaded.job.moves.count.toLocaleString() }}</dd>
-        <dt>Parse time (measured)</dt>
+        <dt>Load and parse time (measured)</dt>
         <dd>{{ Math.round(loaded.parseMs) }} ms</dd>
       </dl>
     </section>
@@ -64,7 +67,7 @@ function toolpathName(number: number, name: string): string {
       <h2>Stock (from file header)</h2>
       <dl>
         <dt>Shape</dt>
-        <dd>{{ header.stock.shape }}</dd>
+        <dd>{{ STOCK_SHAPE_LABEL[header.stock.shape] ?? header.stock.studioShape }}</dd>
         <dt>Size X</dt>
         <dd>{{ mm(header.stock.lengthX) }}</dd>
         <dt>Size Y</dt>
@@ -78,15 +81,19 @@ function toolpathName(number: number, name: string): string {
       <h2>Work origin (from file header)</h2>
       <dl>
         <dt>Position</dt>
-        <dd>{{ header.workOrigin.presetName }}</dd>
-        <template v-if="stockBox">
-          <dt>Stock X</dt>
-          <dd>{{ range(stockBox.min.x, stockBox.max.x) }}</dd>
-          <dt>Stock Y</dt>
-          <dd>{{ range(stockBox.min.y, stockBox.max.y) }}</dd>
-          <dt>Stock Z</dt>
-          <dd>{{ range(stockBox.min.z, stockBox.max.z) }}</dd>
-        </template>
+        <dd>{{ header.workOrigin.description }}</dd>
+      </dl>
+    </section>
+
+    <section v-if="stockBox">
+      <h2>Stock in work coordinates (calculated from the file header)</h2>
+      <dl>
+        <dt>X</dt>
+        <dd>{{ range(stockBox.min.x, stockBox.max.x) }}</dd>
+        <dt>Y</dt>
+        <dd>{{ range(stockBox.min.y, stockBox.max.y) }}</dd>
+        <dt>Z</dt>
+        <dd>{{ range(stockBox.min.z, stockBox.max.z) }}</dd>
       </dl>
     </section>
 
@@ -162,7 +169,7 @@ function toolpathName(number: number, name: string): string {
             <th>#</th>
             <th>Name</th>
             <th>Tool</th>
-            <th>Moves</th>
+            <th>Cutting moves</th>
             <th>Rapids</th>
           </tr>
         </thead>
@@ -180,7 +187,7 @@ function toolpathName(number: number, name: string): string {
             <td>
               {{ tp.toolsUsed.length > 0 ? tp.toolsUsed.map(toolLabel).join(', ') : tp.headerToolNumber !== null ? `T${tp.headerToolNumber}` : '' }}
             </td>
-            <td>{{ tp.moveCount.toLocaleString() }}</td>
+            <td>{{ tp.cuttingCount.toLocaleString() }}</td>
             <td>{{ tp.rapidCount.toLocaleString() }}</td>
           </tr>
         </tbody>

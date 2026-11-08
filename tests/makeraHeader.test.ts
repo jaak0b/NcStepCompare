@@ -28,8 +28,8 @@ describe('Makera header reader', () => {
     const job = parseGcode(header)
     const h = job.header
 
-    expect(h.stock).toMatchObject({ shape: 'cuboid', lengthX: 150, widthY: 100, heightZ: 10 })
-    expect(h.workOrigin?.presetName).toBe('topFrontLeft')
+    expect(h.stock).toMatchObject({ shape: 'box', lengthX: 150, widthY: 100, heightZ: 10 })
+    expect(h.workOrigin?.description).toBe('Top, front left corner')
     expect(h.studioTimeEstimateSeconds).toBe(9892.54)
     expect(h.toolpaths).toEqual([{ number: 1, toolNumber: 1, name: '[T1]3D Relief - Facing' }])
     expect(h.otherRecords.map((r) => r.type)).toEqual(['SOMETHING_NEW'])

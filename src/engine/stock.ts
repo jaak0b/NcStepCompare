@@ -12,13 +12,13 @@ export interface Box3D {
  * with a top front-left origin it writes x=-75, y=-50, z=5. A stock corner at centre-relative
  * position c therefore sits at c - offset in work coordinates.
  *
- * Only cuboid stock has a box; any other shape returns null.
+ * Only box-shaped stock has a box; any other shape returns null.
  */
 export function stockBoxInWorkCoordinates(
   stock: StockDefinition,
   origin: WorkOriginDefinition,
 ): Box3D | null {
-  if (stock.shape !== 'cuboid') return null
+  if (stock.shape !== 'box') return null
   const o = origin.offsetFromStockCentre
   const hx = stock.lengthX / 2
   const hy = stock.widthY / 2
