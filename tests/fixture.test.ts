@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { summarizeJob } from '../src/engine/jobSummary'
+import { MaterialSimulation } from '../src/engine/simulation'
 import { stockBoxInWorkCoordinates } from '../src/engine/stock'
+import { buildToolTable } from '../src/engine/toolTable'
+import { cutterProfile, type CutterProfile } from '../src/engine/toolShape'
 
 // Facts stated for the backplate fixture in CLAUDE.md.
 describe('backplate fixture', () => {
@@ -39,5 +42,28 @@ describe('backplate fixture', () => {
     expect(b.max.x).toBeLessThanOrEqual(150)
     expect(b.min.y).toBeGreaterThanOrEqual(0)
     expect(b.max.y).toBeLessThanOrEqual(100)
+  })
+
+  // Run at 0.1 mm cells to keep the test fast. Through-cuts end at Z -10.3 with a flat end mill, so
+  // whole cells sit exactly there. Drilling goes to Z -11.0 with a 60 degree cone (header value): a
+  // cell centre is at most 0.0707 mm from the drill axis, so the deepest cell lies within
+  // 0.0707 / tan(30 deg) = 0.122 mm above -11.0.
+  it('cuts through to Z -10.3 and drills to Z -11.0 after the whole job', () => {
+    const h = job.header
+    const tools = new Map<number, CutterProfile>()
+    for (const t of buildToolTable(h.tools, [])) tools.set(t.number, cutterProfile(t) as CutterProfile)
+    const sim = new MaterialSimulation(stockBoxInWorkCoordinates(h.stock!, h.workOrigin!)!, 0.1, job.moves, tools, [])
+
+    sim.advanceTo(job.moves.count)
+
+    let min = Infinity
+    let cellsAtThroughCutDepth = 0
+    for (const v of sim.grid.heights) {
+      if (v < min) min = v
+      if (Math.abs(v - -10.3) < 1e-5) cellsAtThroughCutDepth++
+    }
+    expect(cellsAtThroughCutDepth).toBeGreaterThan(0)
+    expect(min).toBeGreaterThanOrEqual(-11)
+    expect(min).toBeLessThan(-10.878)
   })
 })
