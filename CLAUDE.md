@@ -167,6 +167,10 @@ check in the browser preview for anything visible. There is no CI; the full vite
 A bug fix is test-driven: write the failing test, see it fail, fix, see it pass. Make code changes first,
 then run tests once at the end; do not re-run them after every edit.
 
+**Browser checks never take the owner's mouse.** Agents measure and check only in a headless or
+background browser (e.g. Playwright headless, with GPU flags if needed). Never open a foreground window
+or capture the mouse or keyboard; if a check cannot run headless, report it instead.
+
 **Subagents.** Implementation work goes to background `general-purpose` agents on Opus, one milestone (or
 one coherent piece) at a time. Read-only lookups go to `Explore`. Every agent gets a title that names what
 it does. Never run more than 1 Fable agent at a time.
