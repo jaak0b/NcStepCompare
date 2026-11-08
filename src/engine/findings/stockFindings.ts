@@ -5,12 +5,15 @@
 //
 // Thread: a hole cut wider than the model by a thread mill. A gouge cluster is a thread when every
 // one of its cells was last cut by a move of a thread-mill tool and the cluster is a ring around a
-// hole (it encloses cells that are not part of it). Thread data is not in the STEP export, so the
-// G-code decides.
+// hole of the model: it encloses cells that are not part of it, and in every one of them the model
+// surface within the gouge tolerance (the cell's gouge limit) lies below that under the ring. That
+// holds in a through-hole (no material, no limit), on a blind hole's floor, and on the rim cells
+// within tolerance of either; it fails for a solid island. Thread data is not in the STEP export, so
+// the G-code decides.
 import { cellDeviation, type ToleranceLimits } from '../deviation'
 import type { HeightGrid } from '../heightGrid'
 import type { ModelGrid } from '../modelGrid'
-import { enclosesHole, labelComponents, type CellBounds } from './clusters'
+import { enclosedCells, labelComponents, type CellBounds } from './clusters'
 import { mm, position, type Finding, type FindingRow } from './finding'
 
 export interface StockFindingInput {
@@ -37,6 +40,8 @@ interface Cluster extends CellBounds {
   maxZ: number
   /** True while every cell was last cut by a thread mill. */
   allThreadMill: boolean
+  /** Lowest gouge limit among the cluster's cells. */
+  minGougeLimit: number
 }
 
 function clusters(input: StockFindingInput, flags: Uint8Array, amount: (c: number) => number): { list: Cluster[]; labels: Int32Array } {
@@ -53,6 +58,7 @@ function clusters(input: StockFindingInput, flags: Uint8Array, amount: (c: numbe
     minZ: Infinity,
     maxZ: -Infinity,
     allThreadMill: true,
+    minGougeLimit: Infinity,
   }))
   for (let c = 0; c < labels.length; c++) {
     const l = labels[c]
@@ -73,6 +79,7 @@ function clusters(input: StockFindingInput, flags: Uint8Array, amount: (c: numbe
     const z = input.heights[c]
     if (z < k.minZ) k.minZ = z
     if (z > k.maxZ) k.maxZ = z
+    if (input.limits.gougeBelow[c] < k.minGougeLimit) k.minGougeLimit = input.limits.gougeBelow[c]
     const m = input.lastCut[c]
     if (m < 0 || !input.threadMills.has(input.moveTool[m])) k.allThreadMill = false
   }
@@ -109,12 +116,27 @@ function lastCutRow(input: StockFindingInput, c: number): FindingRow[] {
   return [{ label: 'Last cut by', value: `T${input.moveTool[m]}, line ${input.moveLine[m]}`, basis: 'measured' }]
 }
 
+/** True when the cluster encloses cells and every one of them is a hole in the model. */
+function enclosesModelHole(input: StockFindingInput, labels: Int32Array, label: number, k: Cluster): boolean {
+  const inside = enclosedCells(labels, input.grid.nx, label, k)
+  if (inside.length === 0) return false
+  return inside.every((c) => input.limits.gougeBelow[c] < k.minGougeLimit)
+}
+
+/** Gouge, thread and leftover findings on the final stock. */
 export function stockFindings(input: StockFindingInput): Finding[] {
+  return analyseStock(input).findings
+}
+
+/** The findings, and per cell 1 where the cell belongs to a thread finding. */
+export function analyseStock(input: StockFindingInput): { findings: Finding[]; threadMask: Uint8Array } {
   const { nx, ny, bottom } = input.grid
   const n = nx * ny
   const { heights, model, limits } = input
   const deviation = (c: number) => cellDeviation(heights[c], model.top[c], model.throughFloor[c], bottom)
   const out: Finding[] = []
+  const threadMask = new Uint8Array(nx * ny)
+  const threadLabels = new Set<number>()
 
   const gougeFlags = new Uint8Array(n)
   for (let c = 0; c < n; c++) gougeFlags[c] = heights[c] < limits.gougeBelow[c] ? 1 : 0
@@ -122,8 +144,9 @@ export function stockFindings(input: StockFindingInput): Finding[] {
   gouges.list.forEach((k, label) => {
     const { box, rows } = common(input, k)
     const at = cellCentre(input, k.peakCell)
-    const thread = k.allThreadMill && enclosesHole(gouges.labels, nx, label, k)
+    const thread = k.allThreadMill && enclosesModelHole(input, gouges.labels, label, k)
     if (thread) {
+      threadLabels.add(label)
       out.push({
         kind: 'thread',
         at,
@@ -155,6 +178,8 @@ export function stockFindings(input: StockFindingInput): Finding[] {
     })
   })
 
+  for (let c = 0; c < n; c++) if (threadLabels.has(gouges.labels[c])) threadMask[c] = 1
+
   const leftoverFlags = new Uint8Array(n)
   for (let c = 0; c < n; c++) leftoverFlags[c] = heights[c] > limits.leftoverAbove[c] ? 1 : 0
   const leftover = clusters(input, leftoverFlags, deviation)
@@ -175,5 +200,5 @@ export function stockFindings(input: StockFindingInput): Finding[] {
       ],
     })
   }
-  return out
+  return { findings: out, threadMask }
 }

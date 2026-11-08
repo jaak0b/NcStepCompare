@@ -123,7 +123,7 @@ export class MaterialSimulation {
         if (i >= this.statsUpTo) this.unsimulatedMoves[i] = 1
       } else {
         const firstPass = i >= this.statsUpTo
-        sweepMove(g, m.start[k], m.start[k + 1], m.start[k + 2], m.end[k], m.end[k + 1], m.end[k + 2], profile, r, firstPass ? this.lastCut : null, i)
+        sweepMove(g, m.start[k], m.start[k + 1], m.start[k + 2], m.end[k], m.end[k + 1], m.end[k + 2], profile, r, firstPass ? { lastCut: this.lastCut, moveIndex: i } : null)
         extend(this.everDirty, r)
         extend(this.displayDirty, r)
         if (firstPass) {

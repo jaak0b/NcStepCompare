@@ -14,12 +14,17 @@
 // Only the swept band is visited: per cell row, the X interval where the row crosses the capsule
 // of points within the tool radius of the segment (two end discs and the two offset edges).
 //
-// Cutter-workpiece engagement is measured on the same cells (the discrete, Z-map method): every cell
-// whose stock material the move removes is in contact with the cutter.
+// Cutter-workpiece engagement is measured on the height grid (the discrete, Z-map method):
 //  - Depth of cut (axial): the largest thickness of stock removed in one cell.
-//  - Width of cut (radial): the extent of the removed cells across the feed direction in XY, from
-//    the cell centres plus one cell width (the cell resolution), at most the tool diameter. Not
-//    defined for a move without XY travel.
+//  - Width of cut (radial), by the engagement angle method: on the grid as it was before the move,
+//    the contact arc is the part of the leading half of the cutter (facing the feed direction) that
+//    meets stock material. It is found at tool positions along the move no more than one tool radius
+//    apart, so the leading halves cover the whole move. On each ray of the leading half the outermost
+//    point where material stands above the cutter profile is the contact point (a flat end mill
+//    touches with its rim). The width of cut is the extent of the contact points across the feed
+//    direction, the largest over the positions. For a cut on one side of the cutter this is
+//    R (1 - cos phi) with phi the engagement angle; a full slot gives the diameter. Not defined for a
+//    move without XY travel.
 //  - Contact height: the largest height of stock material above the tool tip that the cutter
 //    touches, taking the tip at the point of the move where the cell is cut lowest. The cutter is
 //    modelled as reaching up indefinitely, so material above the flute length is still removed and
@@ -56,8 +61,8 @@ export function sweepMove(
   z1: number,
   tool: CutterProfile,
   out: MoveRemoval,
-  lastCut: Int32Array | null = null,
-  moveIndex = 0,
+  /** First pass through the move: record the last cut per cell and measure the width of cut. */
+  record: { lastCut: Int32Array; moveIndex: number } | null = null,
 ): MoveRemoval {
   out.removedVolume = 0
   out.maxCutDepth = 0
@@ -94,8 +99,9 @@ export function sweepMove(
   const lastI = nx - 1
   const lastJ = grid.ny - 1
   let volume = 0
-  let minLat = Infinity
-  let maxLat = -Infinity
+  if (record && len > 0) out.widthOfCut = contactArcWidth(grid, x0, y0, z0, dx, dy, dz, len, tool)
+  const lastCut = record ? record.lastCut : null
+  const moveIndex = record ? record.moveIndex : 0
 
   for (let j = j0; j <= j1; j++) {
     const cy = grid.originY + (j + 0.5) * cs
@@ -224,11 +230,6 @@ export function sweepMove(
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
           // removed > 0 means the cell held stock material up to `old`.
           if (old - tipZ > out.contactHeight) out.contactHeight = old - tipZ
-          if (len > 0) {
-            const lat = wx * nxu + wy * nyu
-            if (lat < minLat) minLat = lat
-            if (lat > maxLat) maxLat = lat
-          }
         }
         if (lastCut) lastCut[row + i] = moveIndex
         if (i < out.minI) out.minI = i
@@ -239,8 +240,75 @@ export function sweepMove(
     }
   }
   out.removedVolume = volume
-  if (maxLat >= minLat) out.widthOfCut = Math.min(maxLat - minLat + cs, 2 * R)
   return out
+}
+
+/**
+ * Width of cut by the engagement angle method (see the header), from the grid before the move.
+ * Returns 0 when the leading half meets no material.
+ */
+function contactArcWidth(
+  grid: HeightGrid,
+  x0: number,
+  y0: number,
+  z0: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  len: number,
+  tool: CutterProfile,
+): number {
+  const R = tool.radius
+  const cs = grid.cellSize
+  const fx = dx / len
+  const fy = dy / len
+  // Rays every cell width along the rim, across the leading half from -90 to +90 degrees.
+  const rays = Math.max(2, Math.ceil((Math.PI * R) / cs))
+  const positions = Math.max(1, Math.ceil(len / R))
+  const rimOnly = tool.form === ProfileForm.Flat
+  const h = grid.heights
+  const bottom = grid.bottom
+  const present = (x: number, y: number, z: number): boolean => {
+    const i = Math.floor((x - grid.originX) / cs)
+    const j = Math.floor((y - grid.originY) / cs)
+    if (i < 0 || j < 0 || i >= grid.nx || j >= grid.ny) return false
+    const v = h[j * grid.nx + i]
+    // In the grid's float32 precision, so a cell already cut to this height counts as cut.
+    return v > bottom && v > Math.fround(z)
+  }
+  let width = 0
+  for (let k = 0; k <= positions; k++) {
+    const t = k / positions
+    const px = x0 + t * dx
+    const py = y0 + t * dy
+    const pz = z0 + t * dz
+    let lo = Infinity
+    let hi = -Infinity
+    for (let m = 0; m <= rays; m++) {
+      const alpha = -Math.PI / 2 + (Math.PI * m) / rays
+      const ca = Math.cos(alpha)
+      const sa = Math.sin(alpha)
+      // Direction on the leading half: forward component ca, sideways (left of the feed) sa.
+      const ux = ca * fx - sa * fy
+      const uy = ca * fy + sa * fx
+      let r = R
+      let hit = -1
+      while (r >= 0) {
+        if (present(px + r * ux, py + r * uy, pz + profileHeight(tool, r))) {
+          hit = r
+          break
+        }
+        if (rimOnly) break
+        r -= cs
+      }
+      if (hit < 0) continue
+      const lat = hit * sa
+      if (lat < lo) lo = lat
+      if (lat > hi) hi = lat
+    }
+    if (hi >= lo && hi - lo > width) width = hi - lo
+  }
+  return width
 }
 
 export function emptyMoveRemoval(): MoveRemoval {

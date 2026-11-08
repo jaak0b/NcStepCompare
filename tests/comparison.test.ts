@@ -83,7 +83,7 @@ describe('deviation', () => {
 
   // A wall between a top at Z -1 (cells 0..2) and a floor at Z -3 (cells 3..5), 0.05 mm cells.
   const row = { nx: 6, ny: 1, cellSize: 0.05, originX: 0, originY: 0 }
-  const model = { top: Float32Array.from([-1, -1, -1, -3, -3, -3]), throughFloor: new Float32Array(6).fill(NaN) }
+  const model = { top: Float32Array.from([-1, -1, -1, -3, -3, -3]), throughFloor: new Float32Array(6).fill(NaN), partBottom: new Float32Array(6).fill(NaN) }
   const tight = { gouge: 0.05, leftover: 0.1 }
   const summaryFor = (machined: number[], tolerances: { gouge: number; leftover: number }) =>
     new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, Float32Array.from(machined)).summary()
@@ -130,6 +130,7 @@ describe('material outside the part outlines', () => {
   const model = {
     top: Float32Array.from([outside, outside, outside, outside, -3, -3, -3, -3, outside, outside, outside, outside, outside, outside]),
     throughFloor: new Float32Array(14).fill(NaN),
+    partBottom: new Float32Array(14).fill(NaN),
   }
   const tolerances = { gouge: 0.05, leftover: 0.1 }
   // Cells 0 and 13: uncut stock frame (Z 0). Cells 1..3, 9, 10, 12: cut through to Z -10.3.

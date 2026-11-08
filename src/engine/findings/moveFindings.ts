@@ -5,11 +5,18 @@
 //  - Non-cutting contact: stock material touches the cutter higher above the tip than its flute
 //    length.
 //  - Engagement: width of cut or depth of cut of a feed move with XY travel above the tool's limit.
+//    Thread mills and drills are not checked. One finding per toolpath summarises its moves over the
+//    limit and points at the worst one (largest ratio of measured value to limit).
 //  - Plunge: an end mill (flat end mill or ball end) feeding straight down, without XY travel, into
-//    stock material. Drills, V-bits and thread mills are not end mills and are not checked.
+//    stock material at the toolpath's cutting feed or faster. Drills, V-bits and thread mills are not
+//    end mills and are not checked. The cutting feed of a toolpath is the feed programmed on most of
+//    its horizontal feed moves with XY travel (the mode by move count; the higher feed on a tie). A
+//    plunge at a lower feed is a planned plunge and not a finding. One finding per toolpath, pointing
+//    at the deepest plunge.
 //  - Feed and spindle: a feed move that removes stock material with the spindle off, or with a
 //    programmed feed of 0 (F0, or no F word yet).
-// Consecutive moves of the same tool with the same finding are merged into one finding.
+// For the other checks, consecutive moves of the same tool and toolpath with the same finding are
+// merged into one finding.
 import { MoveType, SpindleState, type MoveList } from '../moveList'
 import type { ToolSetup } from '../toolTable'
 import { lineRange, mm, position, type Finding, type FindingKind, type FindingRow } from './finding'
@@ -31,6 +38,33 @@ export interface MoveMeasurements {
 }
 
 const END_MILLS = new Set<FindingTool['kind']>(['flat end mill', 'ball end'])
+const NOT_ENGAGEMENT_CHECKED = new Set<FindingTool['kind']>(['thread mill', 'drill'])
+
+/** Cutting feed per toolpath: the mode of the feeds of its horizontal feed moves with XY travel. */
+export function cuttingFeeds(moves: FindingMoves): Map<number, number> {
+  const counts = new Map<number, Map<number, number>>()
+  for (let i = 0; i < moves.count; i++) {
+    const k = i * 3
+    const xy = moves.start[k] !== moves.end[k] || moves.start[k + 1] !== moves.end[k + 1]
+    if (moves.type[i] === MoveType.Rapid || !xy || moves.start[k + 2] !== moves.end[k + 2]) continue
+    let c = counts.get(moves.toolpath[i])
+    if (!c) counts.set(moves.toolpath[i], (c = new Map()))
+    c.set(moves.feed[i], (c.get(moves.feed[i]) ?? 0) + 1)
+  }
+  const out = new Map<number, number>()
+  for (const [tp, c] of counts) {
+    let best = -1
+    let bestCount = 0
+    for (const [feed, n] of c) {
+      if (n > bestCount || (n === bestCount && feed > best)) {
+        best = feed
+        bestCount = n
+      }
+    }
+    out.set(tp, best)
+  }
+  return out
+}
 
 interface Run {
   first: number
@@ -46,7 +80,9 @@ function runs(moves: FindingMoves, flagged: (i: number) => boolean): Run[] {
       open = null
       continue
     }
-    if (open && moves.tool[i] === moves.tool[open.last] && open.last === i - 1) open.last = i
+    if (open && open.last === i - 1 && moves.tool[i] === moves.tool[open.last] && moves.toolpath[i] === moves.toolpath[open.last]) {
+      open.last = i
+    }
     else out.push((open = { first: i, last: i }))
   }
   return out
@@ -72,7 +108,7 @@ export function moveFindings(moves: FindingMoves, m: MoveMeasurements, tools: Fi
   const hasXYTravel = (i: number) =>
     moves.start[i * 3] !== moves.end[i * 3] || moves.start[i * 3 + 1] !== moves.end[i * 3 + 1]
 
-  const make = (kind: FindingKind, r: Run, rows: FindingRow[]): Finding => {
+  const make = (kind: FindingKind, r: Run, rows: FindingRow[], lead: FindingRow[] = []): Finding => {
     const t = toolOf.get(moves.tool[r.first])
     const radius = t && t.diameter > 0 ? t.diameter / 2 : 0
     const box = {
@@ -100,6 +136,7 @@ export function moveFindings(moves: FindingMoves, m: MoveMeasurements, tools: Fi
       toolpath: moves.toolpath[r.first],
       rank: r.first,
       rows: [
+        ...lead,
         { label: count === 1 ? 'Line' : 'Lines', value: lineRange(moves.line[r.first], moves.line[r.last]), basis: 'calculated' },
         ...(count > 1 ? [{ label: 'Moves', value: String(count), basis: 'calculated' as const }] : []),
         { label: 'Tool', value: t ? `T${t.number} ${t.name}`.trim() : `T${moves.tool[r.first]}`, basis: 'calculated' },
@@ -132,34 +169,82 @@ export function moveFindings(moves: FindingMoves, m: MoveMeasurements, tools: Fi
     )
   }
 
-  const overLimit = (i: number) => {
+  // Engagement: per toolpath (and tool), the moves over a limit and the worst of them.
+  const engagement = new Map<string, { count: number; worst: number; ratio: number; width: number; depth: number }>()
+  const widthOf = (i: number) => (Number.isNaN(m.widthOfCut[i]) ? 0 : m.widthOfCut[i])
+  for (let i = 0; i < moves.count; i++) {
     const t = toolOf.get(moves.tool[i])
-    if (!t || !feedMove(i) || !cutsStock(i) || !hasXYTravel(i)) return false
-    return m.widthOfCut[i] > t.widthOfCutLimit || m.maxCutDepth[i] > t.depthOfCutLimit
+    if (!t || NOT_ENGAGEMENT_CHECKED.has(t.kind) || !feedMove(i) || !cutsStock(i) || !hasXYTravel(i)) continue
+    const ratio = Math.max(widthOf(i) / t.widthOfCutLimit, m.maxCutDepth[i] / t.depthOfCutLimit)
+    if (!(ratio > 1)) continue
+    const key = `${moves.toolpath[i]}|${t.number}`
+    const e = engagement.get(key)
+    if (!e) {
+      engagement.set(key, { count: 1, worst: i, ratio, width: widthOf(i), depth: m.maxCutDepth[i] })
+      continue
+    }
+    e.count++
+    if (ratio > e.ratio) {
+      e.ratio = ratio
+      e.worst = i
+    }
+    if (widthOf(i) > e.width) e.width = widthOf(i)
+    if (m.maxCutDepth[i] > e.depth) e.depth = m.maxCutDepth[i]
   }
-  for (const r of runs(moves, overLimit)) {
-    const t = toolOf.get(moves.tool[r.first])!
+  for (const e of engagement.values()) {
+    const t = toolOf.get(moves.tool[e.worst])!
     out.push(
-      make('engagement', r, [
-        { label: 'Largest width of cut', value: mm(maxOver(m.widthOfCut, r, true), 2), basis: 'measured' },
-        { label: 'Width of cut limit', value: mm(t.widthOfCutLimit, 2), basis: t.sources.widthOfCutLimit },
-        { label: 'Largest depth of cut', value: mm(maxOver(m.maxCutDepth, r)), basis: 'measured' },
-        { label: 'Depth of cut limit', value: mm(t.depthOfCutLimit), basis: t.sources.depthOfCutLimit },
-      ]),
+      make(
+        'engagement',
+        { first: e.worst, last: e.worst },
+        [
+          { label: 'Width of cut of the worst move', value: mm(widthOf(e.worst), 2), basis: 'measured' },
+          { label: 'Depth of cut of the worst move', value: mm(m.maxCutDepth[e.worst]), basis: 'measured' },
+        ],
+        [
+          { label: 'Moves over the limit', value: String(e.count), basis: 'measured' },
+          { label: 'Largest width of cut', value: mm(e.width, 2), basis: 'measured' },
+          { label: 'Width of cut limit', value: mm(t.widthOfCutLimit, 2), basis: t.sources.widthOfCutLimit },
+          { label: 'Largest depth of cut', value: mm(e.depth), basis: 'measured' },
+          { label: 'Depth of cut limit', value: mm(t.depthOfCutLimit), basis: t.sources.depthOfCutLimit },
+        ],
+      ),
     )
   }
 
-  const plunge = (i: number) => {
+  // Plunges at the cutting feed, per toolpath (and tool), pointing at the deepest.
+  const cuttingFeed = cuttingFeeds(moves)
+  const plunges = new Map<string, { count: number; deepest: number }>()
+  for (let i = 0; i < moves.count; i++) {
     const t = toolOf.get(moves.tool[i])
     const k = i * 3
-    return !!t && END_MILLS.has(t.kind) && feedMove(i) && cutsStock(i) && !hasXYTravel(i) && moves.end[k + 2] < moves.start[k + 2]
+    if (!t || !END_MILLS.has(t.kind) || !feedMove(i) || !cutsStock(i) || hasXYTravel(i)) continue
+    if (!(moves.end[k + 2] < moves.start[k + 2])) continue
+    const cf = cuttingFeed.get(moves.toolpath[i])
+    if (cf === undefined || !(moves.feed[i] >= cf)) continue
+    const key = `${moves.toolpath[i]}|${t.number}`
+    const p = plunges.get(key)
+    if (!p) plunges.set(key, { count: 1, deepest: i })
+    else {
+      p.count++
+      if (m.maxCutDepth[i] > m.maxCutDepth[p.deepest]) p.deepest = i
+    }
   }
-  for (const r of runs(moves, plunge)) {
+  for (const p of plunges.values()) {
+    const i = p.deepest
     out.push(
-      make('plunge', r, [
-        { label: 'Depth plunged into stock', value: mm(maxOver(m.maxCutDepth, r)), basis: 'measured' },
-        { label: 'Feed', value: `${moves.feed[r.first]} mm/min`, basis: 'calculated' },
-      ]),
+      make(
+        'plunge',
+        { first: i, last: i },
+        [
+          { label: 'Plunge feed', value: `${moves.feed[i]} mm/min`, basis: 'calculated' },
+          { label: 'Cutting feed of the toolpath', value: `${cuttingFeed.get(moves.toolpath[i])} mm/min`, basis: 'calculated' },
+        ],
+        [
+          { label: 'Plunges at the cutting feed', value: String(p.count), basis: 'measured' },
+          { label: 'Deepest plunge into stock', value: mm(m.maxCutDepth[i]), basis: 'measured' },
+        ],
+      ),
     )
   }
 

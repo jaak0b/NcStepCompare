@@ -51,11 +51,11 @@ export interface CellBounds {
 }
 
 /**
- * True when component `label` encloses at least one cell that is not part of it: a 4-connected
- * flood fill of the other cells from a border one cell outside the component's rectangle does not
- * reach every other cell inside the rectangle.
+ * Cells (grid indices) that component `label` encloses: the other cells inside its rectangle that a
+ * 4-connected flood fill from a border one cell outside the rectangle does not reach. Empty when the
+ * component encloses nothing.
  */
-export function enclosesHole(labels: Int32Array, nx: number, label: number, b: CellBounds): boolean {
+export function enclosedCells(labels: Int32Array, nx: number, label: number, b: CellBounds): number[] {
   // Local rectangle with a one-cell margin, so the border is all outside cells.
   const w = b.i1 - b.i0 + 3
   const h = b.j1 - b.j0 + 3
@@ -68,7 +68,6 @@ export function enclosesHole(labels: Int32Array, nx: number, label: number, b: C
   const reached = new Uint8Array(w * h)
   const stack = [0]
   reached[0] = 1
-  let outside = 1
   while (stack.length > 0) {
     const c = stack.pop()!
     const li = c % w
@@ -84,11 +83,14 @@ export function enclosesHole(labels: Int32Array, nx: number, label: number, b: C
       const q = qj * w + qi
       if (reached[q] || inComponent(qi, qj)) continue
       reached[q] = 1
-      outside++
       stack.push(q)
     }
   }
-  let componentCells = 0
-  for (let lj = 1; lj < h - 1; lj++) for (let li = 1; li < w - 1; li++) if (inComponent(li, lj)) componentCells++
-  return outside + componentCells < w * h
+  const out: number[] = []
+  for (let lj = 1; lj < h - 1; lj++) {
+    for (let li = 1; li < w - 1; li++) {
+      if (!reached[lj * w + li] && !inComponent(li, lj)) out.push((b.j0 + lj - 1) * nx + b.i0 + li - 1)
+    }
+  }
+  return out
 }

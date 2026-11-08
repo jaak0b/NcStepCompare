@@ -157,6 +157,8 @@ export interface ModelGrid {
   top: Float32Array
   /** For through-hole cells: the bottom Z of the part the hole belongs to; NaN elsewhere. */
   throughFloor: Float32Array
+  /** For cells inside a part outline (holes included): the part's bottom Z, the lowest where parts overlap; NaN outside. */
+  partBottom: Float32Array
 }
 
 /**
@@ -167,6 +169,7 @@ export interface ModelGrid {
 export function mergePartGrids(g: GridGeometry, parts: PartModelGrid[]): ModelGrid {
   const top = new Float32Array(g.nx * g.ny).fill(MODEL_OUTSIDE)
   const throughFloor = new Float32Array(g.nx * g.ny).fill(Number.NaN)
+  const partBottom = new Float32Array(g.nx * g.ny).fill(Number.NaN)
   for (const p of parts) {
     for (let j = 0; j < p.h; j++) {
       for (let i = 0; i < p.w; i++) {
@@ -176,9 +179,10 @@ export function mergePartGrids(g: GridGeometry, parts: PartModelGrid[]): ModelGr
         const old = top[c]
         if (Number.isNaN(old) || v > old) top[c] = v
         if (v === MODEL_THROUGH && !(throughFloor[c] <= p.bottomZ)) throughFloor[c] = p.bottomZ
+        if (!(partBottom[c] <= p.bottomZ)) partBottom[c] = p.bottomZ
       }
     }
   }
   for (let c = 0; c < top.length; c++) if (top[c] !== MODEL_THROUGH) throughFloor[c] = Number.NaN
-  return { top, throughFloor }
+  return { top, throughFloor, partBottom }
 }
