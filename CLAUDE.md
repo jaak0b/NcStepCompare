@@ -37,8 +37,10 @@ browser, Web Workers for the simulation, vitest for tests.
    hole.
    Feed and spindle checks: cutting moves with the spindle off, a feed of 0, plunging at the cutting
    feed.
-   Spindle contact: the owner enters the spindle nose / collet nut size; warn when it would touch the
-   stock or the part.
+   Non-cutting contact: warn whenever material still present at that moment touches the cutter above
+   its flute length (e.g. a 30 mm cutter with 5 mm of flute buried 8 mm deep). The flute length comes
+   from the Makera header or the tool table and can be edited. The spindle and collet nut are not
+   checked.
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
 7. The current job setup (placement, tool table, tolerances, settings) is saved in the browser and
