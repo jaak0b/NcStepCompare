@@ -41,6 +41,12 @@ browser, Web Workers for the simulation, vitest for tests.
    its flute length (e.g. a 30 mm cutter with 5 mm of flute buried 8 mm deep). The flute length comes
    from the Makera header or the tool table and can be edited. The spindle and collet nut are not
    checked.
+   Engagement check: per move, the simulation measures the material the cutter actually removes: width
+   of cut (radial engagement) and depth of cut (axial). A move above the tool's limit is a finding, so a
+   full-width slot where a 0.5 mm stepover was intended shows up with the move that did it. Limits are
+   per tool and editable; defaults are width of cut 50 % of the tool diameter and depth of cut 1x the
+   diameter (assumed starting values).
+   Plunge check: an end mill feeding straight down into material still present (drills excluded).
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
 7. The current job setup (placement, tool table, tolerances, settings) is saved in the browser and
