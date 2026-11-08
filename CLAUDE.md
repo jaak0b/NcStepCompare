@@ -46,6 +46,9 @@ browser, Web Workers for the simulation, vitest for tests.
    full-width slot where a 0.5 mm stepover was intended shows up with the move that did it. Limits are
    per tool and editable; defaults are width of cut 50 % of the tool diameter and depth of cut 1x the
    diameter (assumed starting values).
+   Cut-out separation: check that each part is cut free from the stock apart from its tabs. A missing or
+   too shallow cut-out (the comparison alone does not see it, because material outside the part outline
+   is not compared) is a finding.
    Plunge check: an end mill feeding straight down into material still present (drills excluded).
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
