@@ -58,8 +58,14 @@ export class MaterialSimulation {
   readonly grid: HeightGrid
   /** Per move: stock volume removed (mm^3), filled on the first pass through each move. */
   readonly removedVolume: Float32Array
-  /** Per move: largest thickness of stock removed in one cell (mm). */
+  /** Per move: largest thickness of stock removed in one cell (mm), the depth of cut. */
   readonly maxCutDepth: Float32Array
+  /** Per move: width of cut across the feed direction (mm), NaN when not defined (see sweep). */
+  readonly widthOfCut: Float32Array
+  /** Per move: largest height of stock material above the tool tip touching the cutter (mm). */
+  readonly contactHeight: Float32Array
+  /** Per cell: index of the last move that lowered it, -1 for never; from the first pass in order. */
+  readonly lastCut: Int32Array
   /**
    * 1 for moves that reach below the stock top but were not simulated because their tool has no
    * valid shape (or no tool was loaded).
@@ -94,6 +100,9 @@ export class MaterialSimulation {
     this.dirtyMinJ = this.grid.ny
     this.removedVolume = new Float32Array(moves.count)
     this.maxCutDepth = new Float32Array(moves.count)
+    this.widthOfCut = new Float32Array(moves.count).fill(NaN)
+    this.contactHeight = new Float32Array(moves.count)
+    this.lastCut = new Int32Array(this.grid.nx * this.grid.ny).fill(-1)
     this.unsimulatedMoves = new Int32Array(moves.count)
     this.checkpointAt = new Set(checkpointMoves)
   }
@@ -113,12 +122,15 @@ export class MaterialSimulation {
       } else if (!profile) {
         if (i >= this.statsUpTo) this.unsimulatedMoves[i] = 1
       } else {
-        sweepMove(g, m.start[k], m.start[k + 1], m.start[k + 2], m.end[k], m.end[k + 1], m.end[k + 2], profile, r)
+        const firstPass = i >= this.statsUpTo
+        sweepMove(g, m.start[k], m.start[k + 1], m.start[k + 2], m.end[k], m.end[k + 1], m.end[k + 2], profile, r, firstPass ? this.lastCut : null, i)
         extend(this.everDirty, r)
         extend(this.displayDirty, r)
-        if (i >= this.statsUpTo) {
+        if (firstPass) {
           this.removedVolume[i] = r.removedVolume
           this.maxCutDepth[i] = r.maxCutDepth
+          this.widthOfCut[i] = r.widthOfCut
+          this.contactHeight[i] = r.contactHeight
         }
         if (r.minI < this.dirtyMinI) this.dirtyMinI = r.minI
         if (r.maxI > this.dirtyMaxI) this.dirtyMaxI = r.maxI

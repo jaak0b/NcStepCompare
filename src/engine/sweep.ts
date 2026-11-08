@@ -13,6 +13,17 @@
 //    closest distance) skips cells that are already deeper.
 // Only the swept band is visited: per cell row, the X interval where the row crosses the capsule
 // of points within the tool radius of the segment (two end discs and the two offset edges).
+//
+// Cutter-workpiece engagement is measured on the same cells (the discrete, Z-map method): every cell
+// whose stock material the move removes is in contact with the cutter.
+//  - Depth of cut (axial): the largest thickness of stock removed in one cell.
+//  - Width of cut (radial): the extent of the removed cells across the feed direction in XY, from
+//    the cell centres plus one cell width (the cell resolution), at most the tool diameter. Not
+//    defined for a move without XY travel.
+//  - Contact height: the largest height of stock material above the tool tip that the cutter
+//    touches, taking the tip at the point of the move where the cell is cut lowest. The cutter is
+//    modelled as reaching up indefinitely, so material above the flute length is still removed and
+//    shows up here.
 import type { HeightGrid } from './heightGrid'
 import { ProfileForm, profileHeight, type CutterProfile } from './toolShape'
 
@@ -24,6 +35,10 @@ export interface MoveRemoval {
   removedVolume: number
   /** Largest thickness of stock material removed in one cell by this move, in mm. */
   maxCutDepth: number
+  /** Width of cut across the feed direction, mm; NaN without XY travel or without removal. */
+  widthOfCut: number
+  /** Largest height of stock material above the tool tip in contact with the cutter, mm (0 when none). */
+  contactHeight: number
   /** Changed cell range, inclusive; minI > maxI when nothing changed. */
   minI: number
   maxI: number
@@ -41,9 +56,13 @@ export function sweepMove(
   z1: number,
   tool: CutterProfile,
   out: MoveRemoval,
+  lastCut: Int32Array | null = null,
+  moveIndex = 0,
 ): MoveRemoval {
   out.removedVolume = 0
   out.maxCutDepth = 0
+  out.widthOfCut = NaN
+  out.contactHeight = 0
   out.minI = grid.nx
   out.maxI = -1
   out.minJ = grid.ny
@@ -75,6 +94,8 @@ export function sweepMove(
   const lastI = nx - 1
   const lastJ = grid.ny - 1
   let volume = 0
+  let minLat = Infinity
+  let maxLat = -Infinity
 
   for (let j = j0; j <= j1; j++) {
     const cy = grid.originY + (j + 0.5) * cs
@@ -118,11 +139,14 @@ export function sweepMove(
       const w2 = wx * wx + wy * wy
       const old = h[row + i]
       let zmin: number
+      // Tool tip Z at the point of the move where this cell is cut lowest.
+      let tipZ: number
 
       if (a === 0) {
         // Vertical move: the tool axis stays put.
         if (w2 > R2) continue
-        zmin = (dz < 0 ? z1 : z0) + profileHeight(tool, Math.sqrt(w2))
+        tipZ = dz < 0 ? z1 : z0
+        zmin = tipZ + profileHeight(tool, Math.sqrt(w2))
       } else {
         const b = wx * dx + wy * dy
         const disc = b * b - a * (w2 - R2)
@@ -139,9 +163,11 @@ export function sweepMove(
           else if (t > 1) t = 1
           const ex = wx - t * dx
           const ey = wy - t * dy
+          tipZ = z0
           zmin = z0 + profileHeight(tool, Math.sqrt(ex * ex + ey * ey))
         } else if (flatBottom) {
           zmin = z0 + (dz < 0 ? tb : ta) * dz
+          tipZ = zmin
         } else {
           let tc = b / a
           if (tc < ta) tc = ta
@@ -170,12 +196,20 @@ export function sweepMove(
               f2 = z0 + m2 * dz + profileHeight(tool, Math.hypot(wx - m2 * dx, wy - m2 * dy))
             }
           }
+          let tBest = f1 < f2 ? m1 : m2
           zmin = f1 < f2 ? f1 : f2
           // The interval ends are candidates too (a convex f can be monotone on the interval).
           const fa = z0 + ta * dz + profileHeight(tool, Math.hypot(wx - ta * dx, wy - ta * dy))
           const fb = z0 + tb * dz + profileHeight(tool, Math.hypot(wx - tb * dx, wy - tb * dy))
-          if (fa < zmin) zmin = fa
-          if (fb < zmin) zmin = fb
+          if (fa < zmin) {
+            zmin = fa
+            tBest = ta
+          }
+          if (fb < zmin) {
+            zmin = fb
+            tBest = tb
+          }
+          tipZ = z0 + tBest * dz
         }
       }
 
@@ -188,7 +222,15 @@ export function sweepMove(
         if (removed > 0) {
           volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
+          // removed > 0 means the cell held stock material up to `old`.
+          if (old - tipZ > out.contactHeight) out.contactHeight = old - tipZ
+          if (len > 0) {
+            const lat = wx * nxu + wy * nyu
+            if (lat < minLat) minLat = lat
+            if (lat > maxLat) maxLat = lat
+          }
         }
+        if (lastCut) lastCut[row + i] = moveIndex
         if (i < out.minI) out.minI = i
         if (i > out.maxI) out.maxI = i
         if (j < out.minJ) out.minJ = j
@@ -197,9 +239,10 @@ export function sweepMove(
     }
   }
   out.removedVolume = volume
+  if (maxLat >= minLat) out.widthOfCut = Math.min(maxLat - minLat + cs, 2 * R)
   return out
 }
 
 export function emptyMoveRemoval(): MoveRemoval {
-  return { removedVolume: 0, maxCutDepth: 0, minI: 0, maxI: -1, minJ: 0, maxJ: -1 }
+  return { removedVolume: 0, maxCutDepth: 0, widthOfCut: NaN, contactHeight: 0, minI: 0, maxI: -1, minJ: 0, maxJ: -1 }
 }
