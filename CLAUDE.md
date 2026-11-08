@@ -31,9 +31,25 @@ browser, Web Workers for the simulation, vitest for tests.
    flute/shoulder length); tabs along the cut-out (count and size); depth into the spoilboard below the
    stock; time per toolpath and total (feed-based, acceleration ignored, and the UI says so); tool-change
    list.
+   Threads: a hole cut wider than the model by a thread-mill tool is reported as "thread", not as a
+   gouge, in general (not only for the fixture). Thread data is not in the STEP export (the fixture STEP
+   is AP214 and has no thread entities), so detection comes from the G-code: thread-mill tool inside a
+   hole.
+   Feed and spindle checks: cutting moves with the spindle off, a feed of 0, plunging at the cutting
+   feed.
+   Spindle contact: the owner enters the spindle nose / collet nut size; warn when it would touch the
+   stock or the part.
+6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
+   user can change.
+7. The current job setup (placement, tool table, tolerances, settings) is saved in the browser and
+   restored on reload, using Pinia with `localStorage`, the same way the owner's GastronomyApp frontend
+   does it. `localStorage` holds about 5 MB, so the .nc and STEP files themselves are not stored there.
 
-Not in version 1: Makera Studio tool-library import, reading placement from the Studio project file
-(.mks), 4th axis. Ask the owner before widening scope or adding a big dependency.
+Out of scope: machine travel-limit checks (the machine controller handles them).
+
+Later, after the groundwork is complete: Makera Studio tool-library import. Not in version 1 either:
+reading placement from the Studio project file (.mks), 4th axis. Ask the owner before widening scope or
+adding a big dependency.
 
 ### Milestones
 
