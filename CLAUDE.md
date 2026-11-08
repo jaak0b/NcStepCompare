@@ -52,8 +52,9 @@ browser, Web Workers for the simulation, vitest for tests.
    Plunge check: an end mill feeding straight down into material still present (drills excluded).
 6. Tolerances (gouge default 0.05 mm, leftover default 0.1 mm, both assumed) are fields in the UI the
    user can change.
-7. Nothing is saved in the browser: the owner picks the .nc and STEP files by hand each time, so saving
-   only the setup has no value (owner decision 2026-11-08).
+7. Only tool-table edits are saved in the browser (`localStorage`), keyed by the tool's Makera Studio
+   name, and applied to any job that uses that tool. Placement, tolerances and files are not saved: the
+   owner picks the .nc and STEP files by hand each time (owner decision 2026-11-08).
 
 Out of scope: machine travel-limit checks (the machine controller handles them).
 
