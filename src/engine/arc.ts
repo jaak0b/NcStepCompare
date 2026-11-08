@@ -17,6 +17,13 @@ export const DEFAULT_CHORD_TOLERANCE_MM = 0.01
  */
 const SAME_POINT_EPSILON_MM = 1e-6
 
+/** Throws a RangeError unless the chord tolerance is a finite number above zero. */
+export function assertValidChordTolerance(chordTolerance: number): void {
+  if (!Number.isFinite(chordTolerance) || chordTolerance <= 0) {
+    throw new RangeError(`Chord tolerance must be a number above 0 mm, got ${chordTolerance}.`)
+  }
+}
+
 export interface ArcCentre {
   cx: number
   cy: number
@@ -94,6 +101,7 @@ export function flattenArc(
   chordTolerance: number,
   emit: (x: number, y: number, z: number) => void,
 ): void {
+  assertValidChordTolerance(chordTolerance)
   const r0 = Math.hypot(sx - cx, sy - cy)
   const r1 = Math.hypot(ex - cx, ey - cy)
   const sweep = arcSweep(sx, sy, ex, ey, cx, cy, clockwise)

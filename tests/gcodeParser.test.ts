@@ -137,3 +137,61 @@ describe('G-code parser: warnings', () => {
     expect(endOf(job, 1)).toEqual([6, 1, 0])
   })
 })
+
+describe('G-code parser: review fixes', () => {
+  it('does not draw moves in an unsupported motion mode until G0 to G3 returns', () => {
+    const job = parseGcode(program('G0 X0 Y0 Z5', 'G0 X1', 'G81 X10 Y10 Z-5 R1 F100', 'X20', 'G0 X0 Y0 Z5', 'G0 X2'))
+
+    expect(job.moves.count).toBe(2)
+    expect(Array.from(job.moves.line)).toEqual([2, 6])
+    expect(job.warnings.map((w) => w.line)).toEqual([3, 4])
+  })
+
+  it('treats every axis as unknown after a bare G28', () => {
+    const job = parseGcode(program('G0 X1 Y2 Z3', 'G28', 'G1 X5 F100'))
+
+    expect(job.moves.count).toBe(0)
+    expect(job.warnings.map((w) => w.line)).toEqual([2, 3])
+  })
+
+  it.each([
+    ['G53 G0 Z0'],
+    ['G91 G28 Z0'],
+  ])('keeps X and Y known after %s, which names only Z', (homingLine) => {
+    const job = parseGcode(program('G0 X1 Y2 Z3', homingLine, 'G90 G0 Z5', 'G1 X4 F100'))
+
+    expect(job.moves.count).toBe(1)
+    expect(startOf(job, 0)).toEqual([1, 2, 5])
+  })
+
+  it('skips a line with a number in exponent notation instead of moving', () => {
+    const job = parseGcode(program('G0 X0 Y0 Z0', 'G1 X1e3 F100'))
+
+    expect(job.moves.count).toBe(0)
+    expect(job.warnings.map((w) => w.line)).toEqual([2])
+    expect(job.warnings[0].text).toBe('G1 X1e3 F100')
+  })
+
+  it.each([[0], [-0.01], [NaN]])('rejects chord tolerance %s', (tolerance) => {
+    expect(() => parseGcode('G0 X0 Y0 Z0', { chordToleranceMm: tolerance })).toThrow(RangeError)
+  })
+
+  it('reads I/J as offsets from the start point under G91, not added twice', () => {
+    const job = parseGcode(program('G0 X10 Y0 Z0', 'G91 G3 X-10 Y10 I-10 J0 F100'))
+    const b = summarizeJob(job).bounds!
+
+    expect(endOf(job, job.moves.count - 1)).toEqual([0, 10, 0])
+    expect(b.min.x).toBeGreaterThanOrEqual(0)
+    expect(b.max.x).toBe(10)
+  })
+
+  // Centre of R-10 between (0,0) and (10,0) is (5, 8.660); the 300 degree G2 arc peaks at Y 18.660.
+  it('takes the arc over 180 degrees for a negative R', () => {
+    const job = parseGcode(program('G0 X0 Y0 Z0', 'G2 X10 Y0 R-10 F100'))
+    const b = summarizeJob(job).bounds!
+
+    expect(b.max.y).toBeGreaterThan(18.65)
+    expect(b.max.y).toBeLessThanOrEqual(18.661)
+    expect(b.min.y).toBeGreaterThanOrEqual(0)
+  })
+})

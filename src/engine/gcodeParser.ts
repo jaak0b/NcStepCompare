@@ -11,6 +11,7 @@
 
 import {
   DEFAULT_CHORD_TOLERANCE_MM,
+  assertValidChordTolerance,
   arcCentreFromRadius,
   arcRadiusMismatch,
   flattenArc,
@@ -66,6 +67,7 @@ const CH_TAB = 9
 const CH_SPACE = 32
 const CH_PERCENT = 37
 const CH_PAREN_OPEN = 40
+const CH_PAREN_CLOSE = 41
 const CH_PLUS = 43
 const CH_MINUS = 45
 const CH_DOT = 46
@@ -73,8 +75,10 @@ const CH_0 = 48
 const CH_9 = 57
 const CH_SEMICOLON = 59
 const CH_A = 65
+const CH_E = 69
 const CH_Z = 90
 const CH_a = 97
+const CH_e = 101
 const CH_z = 122
 
 const enum Motion {
@@ -83,6 +87,8 @@ const enum Motion {
   Linear = 1,
   ArcCW = 2,
   ArcCCW = 3,
+  /** A motion code this parser does not model (canned cycles, probing, splines, threading). */
+  Unsupported = 4,
 }
 
 const enum Plane {
@@ -95,6 +101,7 @@ const LETTER_INDEX = (ch: string) => ch.charCodeAt(0) - CH_A
 
 export function parseGcode(source: string, options: ParseOptions = {}): ParsedJob {
   const chordTolerance = options.chordToleranceMm ?? DEFAULT_CHORD_TOLERANCE_MM
+  assertValidChordTolerance(chordTolerance)
   const header = emptyMakeraHeader()
   let hasMakeraHeader = false
   const warnings: ParseWarning[] = []
@@ -102,6 +109,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
 
   // Modal state.
   let motion: Motion = Motion.None
+  let unsupportedMotionName = ''
   let plane: Plane = Plane.XY
   let unitScale = 1
   let incremental = false
@@ -208,8 +216,9 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       }
       if (c === CH_SEMICOLON) break
       if (c === CH_PAREN_OPEN) {
-        const close = source.indexOf(')', i)
-        if (close < 0 || close >= lineEnd) {
+        let close = i + 1
+        while (close < lineEnd && source.charCodeAt(close) !== CH_PAREN_CLOSE) close++
+        if (close >= lineEnd) {
           lineError = 'Comment has no closing parenthesis.'
           break
         }
@@ -244,6 +253,10 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
         lineError = `Word "${String.fromCharCode(CH_A + letter)}" has no number.`
         break
       }
+      if (i < lineEnd && (ch === CH_E || ch === CH_e)) {
+        lineError = 'Number in exponent notation is not valid G-code.'
+        break
+      }
       if (words === MAX_WORDS_PER_LINE) {
         lineError = `Line has more than ${MAX_WORDS_PER_LINE} words.`
         break
@@ -268,6 +281,9 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     let toolChange = false
     let spindleWord = -1
     let skipMotion = false
+    let homing = false
+    let cancelMotion = false
+    let unsupportedMotionCode = ''
     let skipReason = ''
     let duplicate = ''
     let newPlane: Plane = plane
@@ -297,10 +313,17 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
             case 910: newIncremental = true; break
             case 901: newArcCentreAbsolute = true; break
             case 911: newArcCentreAbsolute = false; break
-            case 400: case 430: case 490: case 540: case 610: case 640: case 800: case 940:
+            case 400: case 430: case 490: case 540: case 610: case 640: case 940:
               break // modes with no effect on the drawn toolpath
+            case 800: cancelMotion = true; break
+            case 50: case 51: case 52: case 330: case 382: case 383: case 384: case 385: case 730: case 760:
+            case 810: case 820: case 830: case 840: case 850: case 860: case 870: case 880: case 890:
+              gMotion = Motion.Unsupported
+              unsupportedMotionCode = `G${v}`
+              break
             case 280:
               skipMotion = true
+              homing = true
               skipReason = 'G28 (return to machine home) is not drawn: the home position is not known in work coordinates.'
               break
             case 530:
@@ -365,12 +388,27 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       tool = selectedTool
     }
     if (spindleWord >= 0) spindle = spindleWord as SpindleStateValue
-    if (gMotion !== Motion.None && !skipMotion) motion = gMotion
+    if (gMotion !== Motion.None) motion = gMotion
+    if (cancelMotion) motion = Motion.None
+    if (gMotion === Motion.Unsupported) unsupportedMotionName = unsupportedMotionCode
 
     const hasAxis = hasX || hasY || hasZ
     if (skipMotion) {
       warn(skipReason)
-      // Where the machine ends up is not known in work coordinates.
+      // Where the named axes end up is not known in work coordinates. A bare G28 homes every axis.
+      const all = homing && !hasAxis
+      if (all || hasX) x = NaN
+      if (all || hasY) y = NaN
+      if (all || hasZ) z = NaN
+      continue
+    }
+    if (motion === Motion.Unsupported) {
+      if (gMotion === Motion.Unsupported) {
+        warn(`${unsupportedMotionName} is not supported. Moves are not drawn until the next G0, G1, G2 or G3.`)
+      } else if (hasAxis) {
+        warn(`Move in unsupported motion mode ${unsupportedMotionName} is not drawn.`)
+      }
+      // The machine moves in a way this parser does not model.
       if (hasAxis) {
         x = NaN
         y = NaN
