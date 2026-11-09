@@ -12,20 +12,26 @@
 // Gouge and leftover are decided by distance, not by the vertical deviation alone. At a vertical
 // wall a lateral offset far smaller than the tolerance changes a cell's height by the whole wall
 // height, so a vertical test would flag every wall. The tolerance is therefore a zone around the
-// model surface: every point within the tolerance of the surface along X, Y and Z, which is the
-// Minkowski sum of the surface with a cube of half-size tol (distance in the L-infinity norm). On
-// the height field this is flat grey-scale erosion and dilation with a square window:
-//   gouge limit(c)    = min over cells q with |di|, |dj| <= n of model(q) - tol
-//   leftover limit(c) = max over the same window of model(q) + tol,   n = floor(tol / cellSize)
-// where cells without material count as -infinity for the gouge limit, and for the leftover limit a
-// through-hole cell counts as its part's bottom and a cell outside the outlines as the stock bottom.
+// model surface: every point within the tolerance of the surface, measured as Euclidean distance in
+// X, Y and Z (the ISO 1101 profile zone, bounded by the envelope of spheres of radius tol), which is
+// the Minkowski sum of the surface with a ball of radius tol. On the height field this is grey-scale
+// erosion and dilation with the ball as a non-flat structuring element (Serra; Sternberg): a column
+// at the horizontal distance r <= tol contributes the height of the ball's cap there,
+// sqrt(tol^2 - r^2):
+//   gouge limit(c)    = min over cells q with |q - c| <= tol of model(q) - sqrt(tol^2 - |q - c|^2)
+//   leftover limit(c) = max over the same cells of model(q) + sqrt(tol^2 - |q - c|^2)
+// with |q - c| the distance between the cell centres, where cells without material count as
+// -infinity for the gouge limit, and for the leftover limit a through-hole cell counts as its part's
+// bottom and a cell outside the outlines as the stock bottom.
 // So cells outside the outline have the same tolerance zone as those inside: a wall within tolerance
 // of the model wall is within tolerance on both sides. A cell is a gouge when the machined height is
 // below its gouge limit, and leftover when above its leftover limit.
 //
-// A square window is separable, so each limit is a sliding minimum or maximum along rows and then
-// columns (monotonic deque, Lemire's streaming min/max): the cost per cell does not depend on the
-// tolerance.
+// The ball is not separable, so each limit is a loop over the cells of the disc. Most cells lie in
+// flat regions, where every cell of the disc holds the same value and the limit is that value plus or
+// minus tol; the square window around the disc (separable: a sliding minimum and maximum along rows
+// and then columns, monotonic deque, Lemire's streaming min/max) finds these, so the disc loop runs
+// only near walls and steps.
 //
 // Both the simulation and the model are sampled at cell centres with closed sets, so they agree on
 // identical geometry. The inputs themselves differ by micrometres at walls (mesh chord error, the CAM
@@ -107,6 +113,58 @@ function squareFilter(a: Float32Array, w: number, h: number, n: number, takeMin:
 /** Window half-size in cells for a tolerance; the 1e-9 only absorbs rounding when tol is a multiple. */
 const windowCells = (cellSize: number, tol: number) => Math.floor(tol / cellSize + 1e-9)
 
+/** Cell offset (di, dj) inside the disc of radius tol, with the height of the ball's cap there. */
+export interface DiscCell {
+  di: number
+  dj: number
+  cap: number
+}
+
+/** The cells whose centres lie within tol of a cell centre (Euclidean), with their cap heights. */
+export function discCells(cellSize: number, tol: number): DiscCell[] {
+  const n = windowCells(cellSize, tol)
+  const out: DiscCell[] = []
+  for (let dj = -n; dj <= n; dj++) {
+    for (let di = -n; di <= n; di++) {
+      const r2 = (di * di + dj * dj) * cellSize * cellSize
+      if (r2 <= tol * tol * (1 + 1e-9)) out.push({ di, dj, cap: Math.sqrt(Math.max(0, tol * tol - r2)) })
+    }
+  }
+  return out
+}
+
+/**
+ * Grey-scale erosion (min of value - cap) or dilation (max of value + cap) of a w x h array with
+ * the ball of radius tol (see the header). The disc clips at the grid edge.
+ */
+function ballFilter(a: Float32Array, w: number, h: number, cellSize: number, tol: number, erode: boolean): Float32Array {
+  const n = windowCells(cellSize, tol)
+  const lo = squareFilter(a, w, h, n, true)
+  const hi = squareFilter(a, w, h, n, false)
+  const disc = discCells(cellSize, tol)
+  const out = new Float32Array(a.length)
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) {
+      const c = j * w + i
+      if (lo[c] === hi[c]) {
+        out[c] = erode ? lo[c] - tol : hi[c] + tol
+        continue
+      }
+      let best = erode ? Infinity : -Infinity
+      for (const d of disc) {
+        const qi = i + d.di
+        const qj = j + d.dj
+        if (qi < 0 || qj < 0 || qi >= w || qj >= h) continue
+        const v = a[qj * w + qi]
+        if (erode) best = Math.min(best, v - d.cap)
+        else best = Math.max(best, v + d.cap)
+      }
+      out[c] = best
+    }
+  }
+  return out
+}
+
 /** Gouge and leftover limits per cell of the whole grid for the model grid and tolerances. */
 export function toleranceLimits(g: GridGeometry, model: ModelGrid, tol: Tolerances, stockBottom: number): ToleranceLimits {
   const n = g.nx * g.ny
@@ -118,13 +176,10 @@ export function toleranceLimits(g: GridGeometry, model: ModelGrid, tol: Toleranc
     gougeBase[c] = solid ? top : -Infinity
     leftoverBase[c] = solid ? top : top === MODEL_THROUGH ? model.throughFloor[c] : stockBottom
   }
-  const gougeBelow = squareFilter(gougeBase, g.nx, g.ny, windowCells(g.cellSize, tol.gouge), true)
-  const leftoverAbove = squareFilter(leftoverBase, g.nx, g.ny, windowCells(g.cellSize, tol.leftover), false)
-  for (let c = 0; c < n; c++) {
-    gougeBelow[c] -= tol.gouge
-    leftoverAbove[c] += tol.leftover
+  return {
+    gougeBelow: ballFilter(gougeBase, g.nx, g.ny, g.cellSize, tol.gouge, true),
+    leftoverAbove: ballFilter(leftoverBase, g.nx, g.ny, g.cellSize, tol.leftover, false),
   }
-  return { gougeBelow, leftoverAbove }
 }
 
 /**

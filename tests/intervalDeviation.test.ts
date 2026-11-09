@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { toleranceLimits } from '../src/engine/deviation'
 import { createDexelStock } from '../src/engine/dexelStock'
 import { expectedSolid, intervalDeviation, type IntervalSets } from '../src/engine/intervalDeviation'
 
@@ -28,7 +29,8 @@ function compare(tol = 0.5) {
   stock.dexels.subtract(3, -8, -7) // a groove below the model surface in cell 3
   stock.dexels.subtract(4, -10.3, Infinity) // cut through outside the part
   const expected = expectedSolid(geometry, model, [partDexels], -10)
-  return intervalDeviation(stock, expected, { gouge: tol, leftover: tol })
+  const t = { gouge: tol, leftover: tol }
+  return intervalDeviation(stock, expected, t, toleranceLimits(geometry, model, t, -10))
 }
 
 describe('deviation as Z intervals per column', () => {
@@ -52,16 +54,16 @@ describe('deviation as Z intervals per column', () => {
     expect(at(d.leftover, 3)).toEqual([])
   })
 
-  // Tolerance 1 mm: the window takes one neighbour on each side. Cells 1 and 3 border the outside,
-  // whose expected solid ends at the stock bottom, so nothing there is a gouge; cell 2's undercut
-  // lies within 1 mm of the material of cells 1 and 3, so it is not leftover; cell 0 is leftover
-  // only above Z -2 + 1 = -1, the part top next to it plus the tolerance.
+  // Tolerance 1 mm: the ball reaches the centres of the neighbours on each side, 1 mm away, where its
+  // cap has no height. Cells 1 and 3 border the outside, whose expected solid ends at the stock
+  // bottom, so nothing there is a gouge; cell 2's undercut lies within 1 mm of the material of cells
+  // 1 and 3, so it is not leftover; cell 0 is leftover above Z -2, the part top 1 mm beside it.
   it('applies the tolerance window across neighbouring columns', () => {
     const d = compare(1)
 
     expect(at(d.gouge, 1)).toEqual([])
     expect(at(d.gouge, 3)).toEqual([])
     expect(at(d.leftover, 2)).toEqual([])
-    expect(at(d.leftover, 0)).toEqual([-1, 0])
+    expect(at(d.leftover, 0)).toEqual([-2, 0])
   })
 })

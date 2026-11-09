@@ -165,7 +165,7 @@ function runCompare() {
     // Undercuts (thread grooves) are compared as Z intervals per column. The expected solid comes
     // from the height model for now: the model dexels of the fixture STEP show folded wall strips
     // that the owner has to decide on first.
-    const deviation = intervalDeviation(finalStock!, expectedSolid(g, model, [], g.bottom), req.tolerances)
+    const deviation = intervalDeviation(finalStock!, expectedSolid(g, model, [], g.bottom), req.tolerances, limits)
     // Findings are on the final stock, whatever move playback shows.
     const { findings, threadMask } = analyseStock({
       grid: g,

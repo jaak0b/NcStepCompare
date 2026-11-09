@@ -6,15 +6,16 @@
 // outline, below the through-hole's part bottom in a through-hole, and below the stock bottom
 // outside every outline (the classification comes from
 // the model grid, the same one the height comparison uses). The tolerance zone is the one of
-// deviation.ts in three dimensions (ISO 1101 zone in the L-infinity norm, a cube of half-size tol):
-//   gouge    = (E eroded by the cube of the gouge tolerance) minus S, inside the stock
-//   leftover = S minus (E dilated by the cube of the leftover tolerance)
-// with S the stock material. A cube is the product of the XY square and a Z segment, so erosion is
-// the intersection of the interval sets over the square window (separable: along rows, then along
-// columns), then each interval shrunk by tol in Z; dilation is the union, then grown by tol. The
-// window clips at the grid edge as in deviation.ts. For a column with one interval this gives the
-// height comparison's limits exactly: gouge below (window minimum of the model top) - tol, leftover
-// above (window maximum of the base) + tol.
+// deviation.ts in three dimensions (ISO 1101 profile zone, a ball of radius tol):
+//   gouge    = (E eroded by the ball of the gouge tolerance) minus S, inside the stock
+//   leftover = S minus (E dilated by the ball of the leftover tolerance)
+// with S the stock material. The ball's slice at the horizontal distance r is a Z segment of half
+// height sqrt(tol^2 - r^2), so erosion is the intersection over the cells of the disc of each
+// column's intervals shrunk by that cap, and dilation the union of them grown by it. The disc clips
+// at the grid edge as in deviation.ts. Where every column of the disc is one half-line (everything
+// below a height), this is exactly the height comparison's gouge and leftover limits, so those
+// columns take the limits of deviation.ts directly: one rule, computed once.
+import { discCells, type DiscCell, type ToleranceLimits } from './deviation'
 import type { DexelStock } from './dexelStock'
 import type { GridGeometry } from './heightGrid'
 import type { PartModelDexels } from './modelDexels'
@@ -117,9 +118,8 @@ export function expectedSolid(g: GridGeometry, model: ModelGrid, parts: PartMode
 }
 
 /**
- * Column sets during the window passes. Most columns are one half-line (-Infinity, f]: those keep
- * only f in `half`, and a window of them combines to the minimum (erode) or maximum (dilate) of f,
- * which is the height comparison's own rule. Other columns (NaN in `half`) keep their spans.
+ * Column sets of the expected solid. Most columns are one half-line (-Infinity, f]: those keep only f
+ * in `half`. Other columns (NaN in `half`) keep their spans.
  */
 interface Columns {
   half: Float32Array
@@ -143,49 +143,35 @@ function toColumns(s: IntervalSets): Columns {
 
 const spansOf = (s: Columns, c: number): Spans => (Number.isNaN(s.half[c]) ? s.spans.get(c)! : [-Infinity, s.half[c]])
 
-/** Intersection (erode) or union (dilate) over the square window of half-size n cells, separably. */
-function windowCombine(g: GridGeometry, s: Columns, n: number, erode: boolean): Columns {
-  const combine = erode ? intersect : union
-  const pass = (src: Columns, alongX: boolean): Columns => {
-    const half = new Float32Array(src.half.length)
-    const spans = new Map<number, Spans>()
-    for (let j = 0; j < g.ny; j++) {
-      for (let i = 0; i < g.nx; i++) {
-        const c = j * g.nx + i
-        const lo = Math.max(0, (alongX ? i : j) - n)
-        const hi = Math.min((alongX ? g.nx : g.ny) - 1, (alongX ? i : j) + n)
-        const step = alongX ? 1 : g.nx
-        const first = alongX ? j * g.nx + lo : lo * g.nx + i
-        let simple = true
-        let f = erode ? Infinity : -Infinity
-        for (let k = 0, q = first; k <= hi - lo; k++, q += step) {
-          const v = src.half[q]
-          if (Number.isNaN(v)) {
-            simple = false
-            break
-          }
-          f = erode ? Math.min(f, v) : Math.max(f, v)
-        }
-        if (simple) {
-          half[c] = f
-          continue
-        }
-        let acc = spansOf(src, first)
-        for (let k = 1, q = first + step; k <= hi - lo; k++, q += step) acc = combine(acc, spansOf(src, q))
-        if (acc.length === 2 && acc[0] === -Infinity) half[c] = acc[1]
-        else {
-          half[c] = NaN
-          spans.set(c, acc)
-        }
-      }
+/** Per cell 1 where the disc around it holds a column that is not one half-line. */
+function generalColumns(g: GridGeometry, s: Columns, disc: DiscCell[]): Uint8Array {
+  const out = new Uint8Array(g.nx * g.ny)
+  for (const c of s.spans.keys()) {
+    const i = c % g.nx
+    const j = (c - i) / g.nx
+    for (const d of disc) {
+      const qi = i + d.di
+      const qj = j + d.dj
+      if (qi >= 0 && qj >= 0 && qi < g.nx && qj < g.ny) out[qj * g.nx + qi] = 1
     }
-    return { half, spans }
   }
-  return n === 0 ? s : pass(pass(s, true), false)
+  return out
 }
 
-/** Window half-size in cells for a tolerance, as in deviation.ts. */
-const windowCells = (cellSize: number, tol: number) => Math.floor(tol / cellSize + 1e-9)
+/** Erosion (intersection of the columns shrunk by their caps) or dilation (union grown) at cell c. */
+function ballCombine(g: GridGeometry, s: Columns, c: number, disc: DiscCell[], erode: boolean): Spans {
+  const i = c % g.nx
+  const j = (c - i) / g.nx
+  let acc: Spans | null = null
+  for (const d of disc) {
+    const qi = i + d.di
+    const qj = j + d.dj
+    if (qi < 0 || qj < 0 || qi >= g.nx || qj >= g.ny) continue
+    const own = offset(spansOf(s, qj * g.nx + qi), erode ? d.cap : -d.cap)
+    acc = acc === null ? own : erode ? intersect(acc, own) : union(acc, own)
+  }
+  return acc ?? []
+}
 
 export interface IntervalDeviation {
   /** Per column: Z ranges where the model needs material inside its gouge tolerance and the stock has none. */
@@ -223,11 +209,21 @@ class SetsBuilder {
   }
 }
 
-/** Gouge and leftover intervals of the stock against the expected solid. */
-export function intervalDeviation(stock: DexelStock, expected: IntervalSets, tol: { gouge: number; leftover: number }): IntervalDeviation {
+/**
+ * Gouge and leftover intervals of the stock against the expected solid, with `limits` the height
+ * comparison's limits of the same model and tolerances (see the header).
+ */
+export function intervalDeviation(
+  stock: DexelStock,
+  expected: IntervalSets,
+  tol: { gouge: number; leftover: number },
+  limits: ToleranceLimits,
+): IntervalDeviation {
   const e = toColumns(expected)
-  const eroded = windowCombine(stock, e, windowCells(stock.cellSize, tol.gouge), true)
-  const dilated = windowCombine(stock, e, windowCells(stock.cellSize, tol.leftover), false)
+  const gougeDisc = discCells(stock.cellSize, tol.gouge)
+  const leftoverDisc = discCells(stock.cellSize, tol.leftover)
+  const gougeGeneral = generalColumns(stock, e, gougeDisc)
+  const leftoverGeneral = generalColumns(stock, e, leftoverDisc)
   const count = stock.nx * stock.ny
   const { bottom, top } = stock
   const stockBox: Spans = [bottom, top]
@@ -237,22 +233,22 @@ export function intervalDeviation(stock: DexelStock, expected: IntervalSets, tol
     const h = stock.heights[c]
     const gaps = stock.dexels.gapCount(c) > 0
     const material: Spans | null = gaps ? (h > bottom ? subtract([bottom, h], Array.from(stock.dexels.gapView(c))) : []) : null
-    const fe = eroded.half[c]
-    if (material === null && !Number.isNaN(fe)) {
+    if (material === null && !gougeGeneral[c]) {
       // One half-line against a column without gaps: the height comparison's rule.
       const lo = h > bottom ? h : bottom
-      const hi = Math.min(fe - tol.gouge, top)
+      const hi = Math.min(limits.gougeBelow[c], top)
       if (hi > lo) gouge.push(lo, hi)
     } else {
-      gouge.pushAll(subtract(intersect(offset(spansOf(eroded, c), tol.gouge), stockBox), material ?? (h > bottom ? [bottom, h] : [])))
+      const eroded = gougeGeneral[c] ? ballCombine(stock, e, c, gougeDisc, true) : [-Infinity, limits.gougeBelow[c]]
+      gouge.pushAll(subtract(intersect(eroded, stockBox), material ?? (h > bottom ? [bottom, h] : [])))
     }
     gouge.end(c)
-    const fd = dilated.half[c]
-    if (material === null && !Number.isNaN(fd)) {
-      const lo = Math.max(bottom, fd + tol.leftover)
+    if (material === null && !leftoverGeneral[c]) {
+      const lo = Math.max(bottom, limits.leftoverAbove[c])
       if (h > lo) leftover.push(lo, h)
     } else {
-      leftover.pushAll(subtract(material ?? (h > bottom ? [bottom, h] : []), offset(spansOf(dilated, c), -tol.leftover)))
+      const dilated = leftoverGeneral[c] ? ballCombine(stock, e, c, leftoverDisc, false) : [-Infinity, limits.leftoverAbove[c]]
+      leftover.pushAll(subtract(material ?? (h > bottom ? [bottom, h] : []), dilated))
     }
     leftover.end(c)
   }

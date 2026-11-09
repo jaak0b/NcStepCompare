@@ -55,7 +55,7 @@ describe('thread findings on the dexel stock', () => {
   }
 
   it('reports the grooved ring as one thread with its pitch, and no gouge', () => {
-    const { findings } = analyseStock({ ...input, deviation: intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol) })
+    const { findings } = analyseStock({ ...input, deviation: intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol, toleranceLimits(g, model, tol, g.bottom)) })
 
     expect(findings.filter((f) => f.kind === 'gouge')).toEqual([])
     const threads = findings.filter((f) => f.kind === 'thread')
@@ -70,7 +70,7 @@ describe('thread findings on the dexel stock', () => {
   })
 
   it('counts the grooves below the rim as gouge cells, as the findings do', () => {
-    const dev = intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol)
+    const dev = intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol, toleranceLimits(g, model, tol, g.bottom))
     let columns = 0
     for (let c = 0; c < g.nx * g.ny; c++) if (dev.gouge.offsets[c + 1] > dev.gouge.offsets[c]) columns++
 
@@ -101,7 +101,7 @@ describe('a gouge next to a thread-milled hole', () => {
   const g = sim.grid
   const model = holeModel(g)
   const tol = { gouge: 0.05, leftover: 0.1 }
-  const deviation = intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol)
+  const deviation = intervalDeviation(g, expectedSolid(g, model, [], g.bottom), tol, toleranceLimits(g, model, tol, g.bottom))
 
   it('reports one gouge and one thread, though their cells touch', () => {
     const flags = new Uint8Array(g.nx * g.ny)

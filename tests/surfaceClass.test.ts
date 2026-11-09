@@ -112,3 +112,79 @@ describe('surface colours by position against the model', () => {
     expect(r.at(xIn(2), 0)).toBe(SurfaceClass.Within)
   })
 })
+
+// The zone is a ball: material whose true distance to the model is above the leftover tolerance is
+// leftover. Model cells are sampled at their centres, which all lie in the model, so a sampled
+// distance is never below the true one: a cell farther than the tolerance from the true model wall
+// is always leftover (cells closer than that may still be leftover by up to half a cell diagonal).
+describe('sphere zone on round and 45 degree walls', () => {
+  const cs = 0.05
+  const n = 60 // 3 x 3 mm
+  const sq = { nx: n, ny: n, cellSize: cs, originX: 0, originY: 0, top: 0, bottom: -10 }
+  const centre = (k: number) => (k + 0.5) * cs
+
+  function run(isModel: (x: number, y: number) => boolean, isMaterial: (x: number, y: number) => boolean) {
+    const top = new Float32Array(n * n)
+    const heights = new Float32Array(n * n)
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const c = j * n + i
+        top[c] = isModel(centre(i), centre(j)) ? 0 : MODEL_THROUGH
+        heights[c] = isMaterial(centre(i), centre(j)) ? 0 : -10.3
+      }
+    }
+    const m: ModelGrid = { top, throughFloor: new Float32Array(n * n).fill(-10), partBottom: new Float32Array(n * n).fill(-10) }
+    const limits = toleranceLimits(sq, m, tol, sq.bottom)
+    return { heights, limits, leftover: (c: number) => heights[c] > limits.leftoverAbove[c], m }
+  }
+
+  it('reports the spike two cuts leave inside a round hole as leftover wherever it stands beyond the tolerance', () => {
+    // Model: a through-hole of radius 1 at (1.5, 1.5). Two cuts of radius 0.5 at X 1.05 and 1.95
+    // leave a spike above and below their overlap.
+    const r = (x: number, y: number) => Math.hypot(x - 1.5, y - 1.5)
+    const cut = (x: number, y: number) => Math.hypot(x - 1.05, y - 1.5) <= 0.5 || Math.hypot(x - 1.95, y - 1.5) <= 0.5
+    const s = run((x, y) => r(x, y) >= 1, (x, y) => r(x, y) >= 1 || !cut(x, y))
+
+    let beyond = 0
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const c = j * n + i
+        if (s.heights[c] <= -10 || r(centre(i), centre(j)) >= 1) continue
+        if (1 - r(centre(i), centre(j)) > tol.leftover) {
+          beyond++
+          expect(s.leftover(c)).toBe(true)
+        }
+      }
+    }
+    expect(beyond).toBeGreaterThan(50)
+  })
+
+  // The wall x + y = 2 at 45 degrees; the machined wall stands `offset` farther out, perpendicular.
+  function wall45(offset: number) {
+    const d = (x: number, y: number) => (x + y - 2) / Math.SQRT2
+    return { d, s: run((x, y) => d(x, y) <= 0, (x, y) => d(x, y) <= offset) }
+  }
+
+  it('keeps a 45 degree wall 0.05 mm out within tolerance', () => {
+    const { s } = wall45(0.05)
+
+    let leftover = 0
+    for (let c = 0; c < n * n; c++) if (s.leftover(c)) leftover++
+    expect(leftover).toBe(0)
+  })
+
+  it('reports a 45 degree wall 0.3 mm out as leftover beyond the tolerance, its wall face included', () => {
+    const { d, s } = wall45(0.3)
+
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const dist = d(centre(i), centre(j))
+        if (dist > tol.leftover && dist <= 0.3) expect(s.leftover(j * n + i)).toBe(true)
+      }
+    }
+    // A point of the machined wall face at mid height.
+    const classes = cellClasses(s.m, new Uint8Array(n * n), sq.bottom, tol.leftover)
+    const x = 1 + 0.3 * Math.SQRT1_2
+    expect(surfaceClassAt(sq, s.heights, null, s.limits, classes, x + 0.012, 1 + 0.3 * Math.SQRT1_2 - 0.003, -5)).toBe(SurfaceClass.Leftover)
+  })
+})
