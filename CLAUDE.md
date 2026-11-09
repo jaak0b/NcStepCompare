@@ -204,3 +204,26 @@ agent then fixes all findings, and the fixes are checked in the browser before t
 **Review subagents never extend the benefit of the doubt.** A reviewer treats every existing assumption in
 the code under review (input validated, edge case handled, branch unreachable) as unverified until it
 checks it. "I checked this and it holds" is a complete answer; an empty findings list is a valid outcome.
+
+## Status (2026-11-09, 02:01)
+
+Done, reviewed with /code-review and checked in the browser:
+- Milestones 1 to 5: parser and toolpath viewer, simulation and playback, STEP placement and comparison
+  with auto-orient (orientation and position), findings list, time estimate (fixture: 15,425 s
+  calculated vs Studio header 9,893 s; an independent recount confirms ours, Studio's figure does not
+  follow the programmed feeds).
+- Rotary refusal (A/B/C words on moving lines), workflow tabs with sticky status line, tool edits saved
+  per Studio tool name.
+- Dexel model for threads (docs/dexel-design.md steps 0 to 6): profile tools, gap storage, band sweep,
+  thread mill fields (pitch required), undercut drawing with deviation colours, section view, interval
+  comparison and thread findings. Fixture with T6 pitch 0.5: 0 gouges, 11 threads (pitch 0.500, major
+  diameter 3.05 measured), 135 leftover rings at M3 hole bottoms (tooth flank cannot reach with the
+  assumed ISO tooth values), 41 non-cutting contacts (neck against the cone of T2's assumed 60 degree tip).
+
+Open, next steps:
+- Review finding R4: undercut faces (cell edges) and top-surface walls (slopes between cell centres) do
+  not meet exactly; slits or ledges up to half a cell at gap openings (matters for T-slot/dovetail).
+- Model dexels (modelDexels.ts) are not used: the fixture mesh has folded wall strips that raised
+  leftover; the expected solid comes from the height model. Owner decides whether to pursue.
+- Later tool types: dovetail, T-slot/keyseat, lollipop (profile core exists; tool table fields missing).
+- Owner to enter real values: T2 tip angle (photo suggests about 130 deg), T6 pitch and tooth data.
