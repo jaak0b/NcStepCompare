@@ -178,7 +178,7 @@ function runCompare() {
       threadMills,
       deviation,
     })
-    const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover)
+    const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover, deviation)
     const missing = missingMaterial(finalHeights!, model, limits, threadMask)
     const interleaved = new Float32Array(g.nx * g.ny * 2)
     for (let c = 0; c < g.nx * g.ny; c++) {

@@ -7,24 +7,37 @@
 //    takes the class of the cell's top, which the view decides from the shown height. A bottom face
 //    is never a gouge in 3-axis milling: the tool cannot reach it.
 //  - bit 2: the cell belongs to a thread finding.
+//  - bits 3 and 4: the column holds a gouge or a leftover interval anywhere along Z (interval
+//    deviation); the undercut faces take their colour from these.
 //
 // Missing material: the material the model needs but the G-code cut away, in every cell below the
 // gouge limit (gouges and threads): from the machined height up to the model surface. Such a cell
 // always lies on model material (a cell next to a hole or outside the parts has no gouge limit).
 import type { ToleranceLimits } from './deviation'
+import type { IntervalDeviation } from './intervalDeviation'
 import type { ModelGrid } from './modelGrid'
 
 export const BottomClass = { Outside: 0, OnStockBottom: 1, Raised: 2 } as const
 export const BOTTOM_CLASS_MASK = 3
 export const THREAD_BIT = 4
+export const GOUGE_INTERVAL_BIT = 8
+export const LEFTOVER_INTERVAL_BIT = 16
 
-export function cellClasses(model: ModelGrid, threadMask: Uint8Array, stockBottom: number, leftoverTolerance: number): Uint8Array {
+export function cellClasses(
+  model: ModelGrid,
+  threadMask: Uint8Array,
+  stockBottom: number,
+  leftoverTolerance: number,
+  deviation: IntervalDeviation | null = null,
+): Uint8Array {
   const out = new Uint8Array(model.top.length)
   for (let c = 0; c < out.length; c++) {
     const pb = model.partBottom[c]
     let v: number = BottomClass.Outside
     if (!Number.isNaN(pb)) v = pb - stockBottom <= leftoverTolerance ? BottomClass.OnStockBottom : BottomClass.Raised
     if (threadMask[c]) v |= THREAD_BIT
+    if (deviation && deviation.gouge.offsets[c + 1] > deviation.gouge.offsets[c]) v |= GOUGE_INTERVAL_BIT
+    if (deviation && deviation.leftover.offsets[c + 1] > deviation.leftover.offsets[c]) v |= LEFTOVER_INTERVAL_BIT
     out[c] = v
   }
   return out

@@ -7,7 +7,13 @@
 // The faces are built per tile of 128 x 128 cells, one mesh per tile, and rebuilt only for tiles a
 // change touches (a cell's side faces depend on its neighbours, so a change reaches one cell into
 // the next tile). The mesh is never decimated.
+//
+// With a comparison, each column's faces take the deviation class of the column on the final stock
+// (thread, gouge, leftover or within tolerance, the same classes and colours as the top surface);
+// without one they are stock grey.
 import * as THREE from 'three'
+import { GOUGE_INTERVAL_BIT, LEFTOVER_INTERVAL_BIT, THREAD_BIT } from '../engine/comparisonView'
+import { DEVIATION_COLORS } from './stockSurface'
 import type { GapRecord } from '../engine/dexelStock'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
@@ -63,7 +69,16 @@ function gapsAgainstMaterial(gaps: Float32Array, top: number, bottom: number, ot
 export class UndercutMesh {
   private readonly group = new THREE.Group()
   private readonly meshes = new Map<number, THREE.Mesh>()
-  readonly material = new THREE.MeshLambertMaterial({ color: STOCK_COLOR, side: THREE.DoubleSide })
+  readonly material = new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true, side: THREE.DoubleSide })
+  /** Class byte per cell from the comparison (see comparisonView), or null for plain stock. */
+  private classes: Uint8Array | null = null
+  private readonly palette = {
+    stock: new THREE.Color(STOCK_COLOR),
+    thread: new THREE.Color(DEVIATION_COLORS.thread),
+    gouge: new THREE.Color(DEVIATION_COLORS.gouge),
+    leftover: new THREE.Color(DEVIATION_COLORS.leftover),
+    within: new THREE.Color(DEVIATION_COLORS.within),
+  }
   private readonly tilesX: number
   private readonly tilesY: number
 
@@ -82,6 +97,22 @@ export class UndercutMesh {
   /** True when the tile of the stock surface covering tile (tx, ty) of cells holds a gap face. */
   tileHasGaps(tx: number, ty: number): boolean {
     return tx < this.tilesX && ty < this.tilesY && this.meshes.has(ty * this.tilesX + tx)
+  }
+
+  /** Colours the faces by the comparison's cell classes (null: plain stock) and rebuilds every tile. */
+  setClasses(classes: Uint8Array | null): void {
+    this.classes = classes
+    this.rebuild({ minI: 0, maxI: this.grid.nx - 1, minJ: 0, maxJ: this.grid.ny - 1 })
+  }
+
+  private colorOf(c: number): THREE.Color {
+    const k = this.classes
+    if (!k) return this.palette.stock
+    const v = k[c]
+    if (v & THREAD_BIT) return this.palette.thread
+    if (v & GOUGE_INTERVAL_BIT) return this.palette.gouge
+    if (v & LEFTOVER_INTERVAL_BIT) return this.palette.leftover
+    return this.palette.within
   }
 
   /** Rebuilds the tiles that a change of the cells in `rect` touches. */
@@ -127,6 +158,8 @@ export class UndercutMesh {
     const bottom = stock.min.z
     const pos: number[] = []
     const nor: number[] = []
+    const col: number[] = []
+    let color = this.palette.stock
     const quad = (
       ax: number, ay: number, az: number,
       bx: number, by: number, bz: number,
@@ -135,7 +168,10 @@ export class UndercutMesh {
       n: [number, number, number],
     ) => {
       pos.push(ax, ay, az, bx, by, bz, cx, cy, cz, ax, ay, az, cx, cy, cz, dx, dy, dz)
-      for (let k = 0; k < 6; k++) nor.push(n[0], n[1], n[2])
+      for (let k = 0; k < 6; k++) {
+        nor.push(n[0], n[1], n[2])
+        col.push(color.r, color.g, color.b)
+      }
     }
     const xAt = (i: number) => Math.min(originX + i * cs, stock.max.x)
     const yAt = (j: number) => Math.min(originY + j * cs, stock.max.y)
@@ -145,6 +181,7 @@ export class UndercutMesh {
       const j = Math.floor(c / nx)
       const i = c - j * nx
       const top = this.heights[c]
+      color = this.colorOf(c)
       const x0 = xAt(i)
       const x1 = xAt(i + 1)
       const y0 = yAt(j)
@@ -183,6 +220,7 @@ export class UndercutMesh {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
     geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nor), 3))
+    geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3))
     geometry.computeBoundingSphere()
     return geometry
   }
