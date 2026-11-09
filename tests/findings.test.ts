@@ -273,6 +273,8 @@ describe('gouge and thread', () => {
       lastCut: sim.lastCut,
       moveTool: job.moves.tool,
       moveLine: job.moves.line,
+      moveStart: job.moves.start,
+      moveEnd: job.moves.end,
       threadMills: new Set(tools.filter((t) => t.kind === 'thread mill').map((t) => t.number)),
     })
   }

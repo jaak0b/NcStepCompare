@@ -98,7 +98,7 @@ describe('backplate fixture against its STEP model', async () => {
     for (let c = 0; c < gouge.length; c++) gouge[c] = g.heights[c] < limits.gougeBelow[c] ? 1 : 0
 
     const clusters = clusterSizes(g.nx, g.ny, g.cellSize, gouge)
-    const summary = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights).summary()
+    const summary = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights, g.top, g.dexels).summary()
 
     expect(summary.gougeCells).toBeGreaterThan(0)
     expect(clusters).toHaveLength(11)
@@ -122,6 +122,8 @@ describe('backplate fixture against its STEP model', async () => {
       lastCut: sim.lastCut,
       moveTool: job.moves.tool,
       moveLine: job.moves.line,
+      moveStart: job.moves.start,
+      moveEnd: job.moves.end,
       threadMills: new Set(toolTable.filter((t) => t.kind === 'thread mill').map((t) => t.number)),
     })
 

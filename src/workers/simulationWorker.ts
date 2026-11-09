@@ -161,7 +161,7 @@ function runCompare() {
     const t1 = performance.now()
     const limits = toleranceLimits(g, model, req.tolerances, g.bottom)
     const t2 = performance.now()
-    comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights)
+    comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights, g.top, g.dexels)
     // Undercuts (thread grooves) are compared as Z intervals per column. The expected solid comes
     // from the height model for now: the model dexels of the fixture STEP show folded wall strips
     // that the owner has to decide on first.
@@ -175,10 +175,12 @@ function runCompare() {
       lastCut: sim.lastCut,
       moveTool: moves!.tool,
       moveLine: moves!.line,
+      moveStart: moves!.start,
+      moveEnd: moves!.end,
       threadMills,
       deviation,
     })
-    const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover, deviation)
+    const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover)
     const missing = missingMaterial(finalHeights!, model, limits, threadMask)
     const interleaved = new Float32Array(g.nx * g.ny * 2)
     for (let c = 0; c < g.nx * g.ny; c++) {

@@ -3,17 +3,21 @@
 // Gouge and leftover cells are those the comparison flags (outside the tolerance zone, see
 // deviation). Each 8-connected cluster of them is one finding (connected-component labelling).
 //
-// Thread: a hole cut wider than the model by a thread mill. A gouge cluster is a thread when every
-// one of its cells was last cut by a move of a thread-mill tool and the cluster is a ring around a
-// hole of the model: it encloses cells that are not part of it, and in every one of them the model
-// surface within the gouge tolerance (the cell's gouge limit) lies below that under the ring. That
-// holds in a through-hole (no material, no limit), on a blind hole's floor, and on the rim cells
-// within tolerance of either; it fails for a solid island. Thread data is not in the STEP export, so
-// the G-code decides.
+// Thread: a hole cut wider than the model by a thread mill. Thread data is not in the STEP export, so
+// the G-code decides, cell by cell: the gouge cells last cut by a thread-mill move form the thread
+// candidates, and each 8-connected cluster of them that is a ring around a hole of the model is a
+// thread. A ring encloses cells that are not part of it, and in every one of them the model surface
+// within the gouge tolerance (the cell's gouge limit) lies below that under the ring. That holds in a
+// through-hole (no material, no limit), on a blind hole's floor, and on the rim cells within
+// tolerance of either; it fails for a solid island. A ring cell counts as thread only when the move
+// that last cut it had its tool centre inside that hole at both ends: the thread mill was threading
+// the hole. Every other gouge cell (cut by another tool, or by a thread mill outside a hole) is a
+// gouge, clustered on its own, so a gouge touching a thread ring is still its own gouge finding.
 //
 // With the interval deviation (dexel stock against model dexels, see intervalDeviation), a column
-// is a gouge or leftover cell when it holds a gouge or leftover interval anywhere along Z, so thread
-// grooves below the hole rim count as well. The clusters are then the components of these columns
+// is a gouge cell when it holds a gouge interval anywhere along Z, so thread grooves below the hole
+// rim count as well. A column is a leftover cell when its top lies above the leftover limit (its top
+// is its highest material). The clusters are then the components of these columns
 // in XY. A thread finding also gets its measured pitch (the median spacing of the groove intervals
 // in the column with the most of them, at least three) and major diameter (twice the largest distance of a cluster
 // cell centre from the cluster centre).
@@ -35,6 +39,9 @@ export interface StockFindingInput {
   /** Per move: tool number and source line. */
   moveTool: Int32Array
   moveLine: Int32Array
+  /** Per move: start and end point, x y z triples (work coordinates). */
+  moveStart: Float64Array
+  moveEnd: Float64Array
   /** Tool numbers that are thread mills. */
   threadMills: Set<number>
   /** Deviation as Z intervals per column; when given it decides gouge and leftover cells. */
@@ -57,8 +64,6 @@ interface Cluster extends CellBounds {
   peak: number
   minZ: number
   maxZ: number
-  /** True while every cell was last cut by a thread mill. */
-  allThreadMill: boolean
   /** Lowest gouge limit among the cluster's cells. */
   minGougeLimit: number
 }
@@ -81,7 +86,6 @@ function clusters(
     peak: -Infinity,
     minZ: Infinity,
     maxZ: -Infinity,
-    allThreadMill: true,
     minGougeLimit: Infinity,
   }))
   for (let c = 0; c < labels.length; c++) {
@@ -108,8 +112,6 @@ function clusters(
       k.maxZ = Math.max(k.maxZ, intervals.z[intervals.offsets[c + 1] - 1])
     }
     if (input.limits.gougeBelow[c] < k.minGougeLimit) k.minGougeLimit = input.limits.gougeBelow[c]
-    const m = input.lastCut[c]
-    if (m < 0 || !input.threadMills.has(input.moveTool[m])) k.allThreadMill = false
   }
   return { list, labels }
 }
@@ -144,11 +146,48 @@ function lastCutRow(input: StockFindingInput, c: number): FindingRow[] {
   return [{ label: 'Last cut by', value: `T${input.moveTool[m]}, line ${input.moveLine[m]}`, basis: 'measured' }]
 }
 
-/** True when the cluster encloses cells and every one of them is a hole in the model. */
-function enclosesModelHole(input: StockFindingInput, labels: Int32Array, label: number, k: Cluster): boolean {
+/** The cells the cluster encloses when it is a ring around a hole in the model, else null. */
+function enclosedModelHole(input: StockFindingInput, labels: Int32Array, label: number, k: Cluster): number[] | null {
   const inside = enclosedCells(labels, input.grid.nx, label, k)
-  if (inside.length === 0) return false
-  return inside.every((c) => input.limits.gougeBelow[c] < k.minGougeLimit)
+  if (inside.length === 0) return null
+  return inside.every((c) => input.limits.gougeBelow[c] < k.minGougeLimit) ? inside : null
+}
+
+/** Grid cell under a point, or -1 outside the grid. */
+function cellAt(input: StockFindingInput, p: Float64Array, k: number): number {
+  const { nx, ny, cellSize, originX, originY } = input.grid
+  const i = Math.floor((p[k] - originX) / cellSize)
+  const j = Math.floor((p[k + 1] - originY) / cellSize)
+  return i < 0 || j < 0 || i >= nx || j >= ny ? -1 : j * nx + i
+}
+
+/**
+ * Per cell 1 where the gouge cell belongs to a thread (see the header): last cut by a thread-mill
+ * move whose tool centre stayed inside the model hole that the cell's cluster of thread-mill cells
+ * rings.
+ */
+function threadCells(input: StockFindingInput, gougeFlags: Uint8Array): Uint8Array {
+  const { nx, ny } = input.grid
+  const n = nx * ny
+  const candidates = new Uint8Array(n)
+  for (let c = 0; c < n; c++) {
+    const m = input.lastCut[c]
+    if (gougeFlags[c] && m >= 0 && input.threadMills.has(input.moveTool[m])) candidates[c] = 1
+  }
+  const rings = clusters(input, candidates, () => 0, null)
+  const holes = rings.list.map((k, label) => {
+    const inside = enclosedModelHole(input, rings.labels, label, k)
+    return inside ? new Set(inside) : null
+  })
+  const out = new Uint8Array(n)
+  for (let c = 0; c < n; c++) {
+    const l = rings.labels[c]
+    const hole = l >= 0 ? holes[l] : null
+    if (!hole) continue
+    const m = input.lastCut[c]
+    if (hole.has(cellAt(input, input.moveStart, m * 3)) && hole.has(cellAt(input, input.moveEnd, m * 3))) out[c] = 1
+  }
+  return out
 }
 
 /** Measured pitch and major diameter of a thread cluster from its groove intervals. */
@@ -201,30 +240,43 @@ export function analyseStock(input: StockFindingInput): { findings: Finding[]; t
   const gougeFlags = new Uint8Array(n)
   for (let c = 0; c < n; c++) gougeFlags[c] = (dev ? has(dev.gouge, c) : heights[c] < limits.gougeBelow[c]) ? 1 : 0
   const gougeAmount = dev ? (c: number) => Math.max(-deviation(c), longest(dev.gouge, c)) : (c: number) => -deviation(c)
-  const gouges = clusters(input, gougeFlags, gougeAmount, dev ? dev.gouge : null)
-  gouges.list.forEach((k, label) => {
+  // Thread rings first; a ring that no longer encloses its hole once the cells cut from outside the
+  // hole are left out is not a thread, and its cells return to the gouges.
+  const candidates = threadCells(input, gougeFlags)
+  const threads = clusters(input, candidates, gougeAmount, dev ? dev.gouge : null)
+  threads.list.forEach((k, label) => {
+    if (enclosedModelHole(input, threads.labels, label, k)) threadLabels.add(label)
+  })
+  for (let c = 0; c < n; c++) {
+    if (!threadLabels.has(threads.labels[c])) continue
+    threadMask[c] = 1
+    gougeFlags[c] = 0
+  }
+  threads.list.forEach((k, label) => {
+    if (!threadLabels.has(label)) return
     const { box, rows } = common(input, k)
     const at = cellCentre(input, k.peakCell)
-    const thread = k.allThreadMill && enclosesModelHole(input, gouges.labels, label, k)
-    if (thread) {
-      threadLabels.add(label)
-      const centre = { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 }
-      out.push({
-        kind: 'thread',
-        at,
-        box,
-        moves: null,
-        toolpath: null,
-        rank: at.x * 1e6 + at.y,
-        rows: [
-          { label: 'Centre', value: position({ ...centre, z: k.maxZ }), basis: 'measured' },
-          ...rows,
-          ...(dev ? threadRows(input, gouges.labels, label, dev.gouge, centre) : []),
-          ...lastCutRow(input, k.peakCell),
-        ],
-      })
-      return
-    }
+    const centre = { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 }
+    out.push({
+      kind: 'thread',
+      at,
+      box,
+      moves: null,
+      toolpath: null,
+      rank: at.x * 1e6 + at.y,
+      rows: [
+        { label: 'Centre', value: position({ ...centre, z: k.maxZ }), basis: 'measured' },
+        ...rows,
+        ...(dev ? threadRows(input, threads.labels, label, dev.gouge, centre) : []),
+        ...lastCutRow(input, k.peakCell),
+      ],
+    })
+  })
+
+  const gouges = clusters(input, gougeFlags, gougeAmount, dev ? dev.gouge : null)
+  for (const k of gouges.list) {
+    const { box, rows } = common(input, k)
+    const at = cellCentre(input, k.peakCell)
     out.push({
       kind: 'gouge',
       at,
@@ -239,12 +291,12 @@ export function analyseStock(input: StockFindingInput): { findings: Finding[]; t
         ...lastCutRow(input, k.peakCell),
       ],
     })
-  })
-
-  for (let c = 0; c < n; c++) if (threadLabels.has(gouges.labels[c])) threadMask[c] = 1
+  }
 
   const leftoverFlags = new Uint8Array(n)
-  for (let c = 0; c < n; c++) leftoverFlags[c] = (dev ? has(dev.leftover, c) : heights[c] > limits.leftoverAbove[c]) ? 1 : 0
+  // The top is the highest material of a column, so a column holds leftover exactly when its top lies
+  // above the leftover limit: the same test as the deviation summary and the surface colours.
+  for (let c = 0; c < n; c++) leftoverFlags[c] = heights[c] > limits.leftoverAbove[c] ? 1 : 0
   const leftoverAmount = dev ? (c: number) => Math.max(deviation(c), longest(dev.leftover, c)) : deviation
   const leftover = clusters(input, leftoverFlags, leftoverAmount, dev ? dev.leftover : null)
   for (const k of leftover.list) {

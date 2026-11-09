@@ -86,7 +86,7 @@ describe('deviation', () => {
   const model = { top: Float32Array.from([-1, -1, -1, -3, -3, -3]), throughFloor: new Float32Array(6).fill(NaN), partBottom: new Float32Array(6).fill(NaN) }
   const tight = { gouge: 0.05, leftover: 0.1 }
   const summaryFor = (machined: number[], tolerances: { gouge: number; leftover: number }) =>
-    new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, Float32Array.from(machined)).summary()
+    new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, Float32Array.from(machined), 0).summary()
 
   it('accepts a wall cut one cell (0.05 mm, the gouge tolerance) too far as within tolerance', () => {
     expect(summaryFor([-1, -1, -3, -3, -3, -3], tight).gougeCells).toBe(0)
@@ -108,7 +108,7 @@ describe('deviation', () => {
 
   it('updates the summary from the changed cells only, forward and back', () => {
     const machined = Float32Array.from([-1, -1, -3, -3, -3, -3])
-    const tracker = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tight, -10), -10, machined)
+    const tracker = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tight, -10), -10, machined, 0)
 
     machined[1] = -3
     tracker.update(machined, { minI: 1, maxI: 1, minJ: 0, maxJ: 0 })
@@ -139,20 +139,20 @@ describe('material outside the part outlines', () => {
   const machined = Float32Array.from([0, -10.3, -10.3, -10.3, -3, -3, -3, -3, -3, -10.3, -10.3, -9, -10.3, 0])
 
   it('reports the uncut frame and the sliver as leftover, but not the wall within tolerance', () => {
-    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined).summary()
+    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined, 0).summary()
 
     expect(s.leftoverCells).toBe(3)
     expect(s.maxLeftover).toBe(10)
   })
 
   it('never reports a cut outside the parts as a gouge, even below the stock bottom', () => {
-    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined).summary()
+    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined, 0).summary()
 
     expect(s.gougeCells).toBe(0)
   })
 
   it('still counts only the cells inside the outline as the footprint', () => {
-    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined).summary()
+    const s = new DeviationTracker(row.nx, model, toleranceLimits(row, model, tolerances, -10), -10, machined, 0).summary()
 
     expect(s.footprintCells).toBe(4)
   })

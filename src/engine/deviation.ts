@@ -159,11 +159,42 @@ export interface ChangedCells {
   maxJ: number
 }
 
+/** The undercut gaps of the machined stock, per column (see DexelGaps). */
+export interface ColumnGaps {
+  gapCount(c: number): number
+  gapView(c: number): Float32Array
+}
+
+/**
+ * Gouge of one column against its gouge limit, as the longest Z range where the model needs
+ * material (below `gougeBelow`) and the stock has none: above the machined height `h`, or inside one
+ * of the column's gaps, within the stock from `bottom` to `top`. 0 when there is none. This is the
+ * interval comparison (intervalDeviation) for an expected solid that is one half-line per column,
+ * which the comparison uses as long as the model dexels are not used.
+ */
+export function columnGouge(h: number, gaps: Float32Array | null, gougeBelow: number, bottom: number, top: number): number {
+  const limit = Math.min(gougeBelow, top)
+  let best = limit - Math.max(h, bottom)
+  if (gaps) {
+    for (let k = 0; k < gaps.length; k += 2) {
+      const len = Math.min(gaps[k + 1], limit) - Math.max(gaps[k], bottom)
+      if (len > best) best = len
+    }
+  }
+  return best > 0 ? best : 0
+}
+
 /**
  * Deviation summary of a changing machined grid, kept up to date from the changed cells only. Per
  * cell it stores the current gouge depth and leftover height (0 when within tolerance), so an update
  * adjusts the counts by difference. A maximum is rescanned (over these stored values, not the grid)
  * only when the cell that held it decreased.
+ *
+ * A cell is a gouge when its column holds a gouge anywhere along Z (columnGouge), thread grooves
+ * below the top included, and leftover when its top lies above the leftover limit (the top is the
+ * highest material of the column, so no gap adds leftover). These are the cells the findings
+ * cluster, so the counts here and the findings agree. The gouge depth is the larger of the
+ * vertical depth below the model and the longest gouge range of the column, as in the findings.
  */
 export class DeviationTracker {
   private readonly ny: number
@@ -181,6 +212,8 @@ export class DeviationTracker {
     private readonly limits: ToleranceLimits,
     private readonly stockBottom: number,
     machined: Float32Array,
+    private readonly stockTop: number,
+    private readonly gaps: ColumnGaps | null = null,
   ) {
     this.ny = machined.length / nx
     this.gougeDepth = new Float32Array(machined.length)
@@ -200,7 +233,9 @@ export class DeviationTracker {
       for (let i = i0; i <= i1; i++) {
         const c = j * this.nx + i
         const d = cellDeviation(machined[c], this.model.top[c], this.model.throughFloor[c], this.stockBottom)
-        const gouge = machined[c] < this.limits.gougeBelow[c] ? -d : 0
+        const g = this.gaps && this.gaps.gapCount(c) > 0 ? this.gaps.gapView(c) : null
+        const range = columnGouge(machined[c], g, this.limits.gougeBelow[c], this.stockBottom, this.stockTop)
+        const gouge = range > 0 ? Math.max(-d, range) : 0
         const left = machined[c] > this.limits.leftoverAbove[c] ? d : 0
         const oldGouge = this.gougeDepth[c]
         const oldLeft = this.leftoverHeight[c]
