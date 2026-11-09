@@ -21,7 +21,7 @@ import { meshBounds, tessellationDeflection, type StepPart } from './engine/step
 import { buildToolTable, toolEditKey, toolEdits, withSavedEdits, type ToolSetup } from './engine/toolTable'
 import { loadToolEdits, storeToolEdits } from './ui/toolEditStorage'
 import { readStepInWorker } from './workers/stepMessages'
-import { parseFileInWorker, type LoadedJob } from './workers/parseMessages'
+import { JobRefusedError, parseFileInWorker, type LoadedJob } from './workers/parseMessages'
 import { SimulationClient } from './workers/simulationClient'
 import type { ToolMarker } from './viewer/toolpathScene'
 import type { SimulationReady } from './workers/simulationMessages'
@@ -479,7 +479,9 @@ async function onFileChosen(event: Event) {
     })
     startSimulation()
   } catch (err) {
-    error.value = `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
+    error.value = err instanceof JobRefusedError
+      ? `Job refused (${file.name}): ${err.message}`
+      : `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
     input.value = ''

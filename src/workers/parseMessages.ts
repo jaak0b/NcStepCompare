@@ -7,9 +7,12 @@ export interface ParseRequest {
 
 export type ParseResponse =
   | { ok: true; job: ParsedJob; summary: JobSummary; parseMs: number }
-  | { ok: false; message: string }
+  | { ok: false; message: string; refused?: boolean }
 
 export type LoadedJob = Extract<ParseResponse, { ok: true }> & { fileName: string }
+
+/** The parser refused the job (for example a rotary axis). The message says why. */
+export class JobRefusedError extends Error {}
 
 /** Reads and parses a .nc file in a Web Worker. Rejects with the worker's error message. */
 export function parseFileInWorker(file: File): Promise<LoadedJob> {
@@ -19,7 +22,7 @@ export function parseFileInWorker(file: File): Promise<LoadedJob> {
       worker.terminate()
       const r = event.data
       if (r.ok) resolve({ ...r, fileName: file.name })
-      else reject(new Error(r.message))
+      else reject(r.refused ? new JobRefusedError(r.message) : new Error(r.message))
     }
     worker.onmessageerror = () => {
       worker.terminate()

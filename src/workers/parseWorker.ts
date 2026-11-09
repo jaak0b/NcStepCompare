@@ -12,7 +12,8 @@ self.onmessage = async (event: MessageEvent<ParseRequest>) => {
     const text = await event.data.file.text()
     const job = parseGcode(text)
     if (job.refusal) {
-      self.postMessage({ ok: false, message: job.refusal.message } satisfies ParseResponse)
+      const { message, line, text } = job.refusal
+      self.postMessage({ ok: false, refused: true, message: `${message} Line ${line}: ${text.trim()}` } satisfies ParseResponse)
       return
     }
     const summary = summarizeJob(job)
