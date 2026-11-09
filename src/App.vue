@@ -128,6 +128,8 @@ let nextOrientRequest = 1
 const deviation = shallowRef<DeviationSummary | null>(null)
 const comparisonTiming = ref<{ rasterizeMs: number; limitsMs: number } | null>(null)
 const comparisonRunning = ref(false)
+/** True once a comparison finished for the current simulation, parts and tolerances. */
+const comparisonDone = ref(false)
 const comparisonError = ref<string | null>(null)
 /** Id of the latest compare request; results of older ones are dropped. */
 let latestCompare = 0
@@ -211,6 +213,7 @@ function resetSimulation() {
   stockFindings.value = []
   selectFinding(null)
   comparisonRunning.value = false
+  comparisonDone.value = false
   comparisonTiming.value = null
   // The worker is gone, so no auto-orient answer will come; the user can run it again.
   orientRequests.clear()
@@ -286,6 +289,7 @@ function startSimulation() {
         stockFindings.value = r.findings
         comparisonTiming.value = r.limits ? { rasterizeMs: r.rasterizeMs, limitsMs: r.limitsMs } : null
         comparisonRunning.value = false
+        comparisonDone.value = placedParts.value.length > 0
         comparisonError.value = null
       },
       onOrientations: (requestId, candidates, ms) => {
@@ -377,6 +381,7 @@ function requestCompare() {
   if (simStatus.value !== 'ready') return
   latestCompare++
   comparisonRunning.value = placedParts.value.length > 0
+  comparisonDone.value = false
   // The old stock findings no longer match the parts or tolerances; the new ones come with the result.
   clearStockFindings()
   comparisonError.value = null
@@ -552,19 +557,25 @@ function setAllToolpaths(visible: boolean) {
         <h1>NcStepCompare</h1>
         <StatusLine
           :job-loaded="loaded !== null"
+          :load-error="error"
           :refused="jobRefused"
           :warning-count="loaded?.job.warnings.length ?? 0"
           :sim-status="simStatus"
           :sim-progress="simProgress"
           :sim-ms="simResult?.simMs ?? null"
+          :cell-size-problem="cellSizeError"
           :findings="findings"
-          :compared="placedParts.length > 0"
+          :parts-placed="placedParts.length > 0"
           :comparison-running="comparisonRunning"
+          :comparison-done="comparisonDone"
+          :comparison-error="comparisonError"
+          :step-error="stepError"
+          :tool-edit-problem="toolEditProblem"
         />
         <WorkflowTabs v-model="activeTab" :tabs="TABS" />
       </header>
 
-      <div v-show="activeTab === 'job'" class="tab">
+      <div v-show="activeTab === 'job'" id="workflow-panel-job" class="tab" role="tabpanel" aria-labelledby="workflow-tab-job">
         <label class="file">
           Open G-code file (.nc)
           <input type="file" accept=".nc,.gcode,.ngc,.tap,.txt" :disabled="loading" @change="onFileChosen" />
@@ -583,13 +594,13 @@ function setAllToolpaths(visible: boolean) {
         <p v-else-if="!loading" class="status">Open a .nc file to view its toolpaths.</p>
       </div>
 
-      <div v-show="activeTab === 'tools'" class="tab">
+      <div v-show="activeTab === 'tools'" id="workflow-panel-tools" class="tab" role="tabpanel" aria-labelledby="workflow-tab-tools">
         <p v-if="toolEditProblem" class="error">{{ toolEditProblem }}</p>
         <ToolTable v-if="loaded" :tools="tools" @update="onToolsEdited" @reset="resetTool" />
         <p v-else class="status">Open a .nc file on the Job tab to see its tools.</p>
       </div>
 
-      <div v-show="activeTab === 'parts'" class="tab">
+      <div v-show="activeTab === 'parts'" id="workflow-panel-parts" class="tab" role="tabpanel" aria-labelledby="workflow-tab-parts">
         <section v-if="loaded">
           <h2>STEP parts</h2>
           <label class="file">
@@ -621,7 +632,7 @@ function setAllToolpaths(visible: boolean) {
         <p v-else class="status">Open a .nc file on the Job tab before adding STEP parts.</p>
       </div>
 
-      <div v-show="activeTab === 'check'" class="tab">
+      <div v-show="activeTab === 'check'" id="workflow-panel-check" class="tab" role="tabpanel" aria-labelledby="workflow-tab-check">
         <template v-if="loaded">
           <ComparisonPanel
             v-if="placedParts.length > 0"
@@ -650,12 +661,13 @@ function setAllToolpaths(visible: boolean) {
             :toolpaths="toolpathStarts"
             @select="selectFinding"
           />
-          <p v-else class="status">Findings appear once the simulation has finished.</p>
+          <p v-else-if="simStatus === 'running'" class="status">Findings appear once the simulation has finished.</p>
+          <p v-else class="error">No findings: the simulation {{ simStatus === 'error' ? 'failed' : 'could not start' }}. The reason is on the Info tab.</p>
         </template>
         <p v-else class="status">Open a .nc file on the Job tab first.</p>
       </div>
 
-      <div v-show="activeTab === 'info'" class="tab">
+      <div v-show="activeTab === 'info'" id="workflow-panel-info" class="tab" role="tabpanel" aria-labelledby="workflow-tab-info">
         <template v-if="loaded">
           <TimePanel :loaded="loaded" />
           <SimulationPanel
@@ -724,6 +736,12 @@ header {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  margin-top: -12px;
+  padding-top: 12px;
+  background: #fff;
 }
 .tab {
   display: flex;

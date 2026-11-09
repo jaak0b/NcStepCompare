@@ -1,18 +1,44 @@
 <script setup lang="ts" generic="T extends string">
-defineProps<{ tabs: { id: T; label: string }[]; modelValue: T }>()
+import { nextTick } from 'vue'
+
+const props = defineProps<{ tabs: { id: T; label: string }[]; modelValue: T }>()
 const emit = defineEmits<{ 'update:modelValue': [id: T] }>()
+
+/** Element ids shared with the tab panels, which carry the matching aria-labelledby and id. */
+const tabId = (id: string) => `workflow-tab-${id}`
+const panelId = (id: string) => `workflow-panel-${id}`
+
+/** Arrow keys, Home and End move between tabs (roving tabindex). */
+async function onKey(event: KeyboardEvent, index: number) {
+  const n = props.tabs.length
+  const next =
+    event.key === 'ArrowRight' ? (index + 1) % n
+    : event.key === 'ArrowLeft' ? (index - 1 + n) % n
+    : event.key === 'Home' ? 0
+    : event.key === 'End' ? n - 1
+    : -1
+  if (next < 0) return
+  event.preventDefault()
+  emit('update:modelValue', props.tabs[next].id)
+  await nextTick()
+  document.getElementById(tabId(props.tabs[next].id))?.focus()
+}
 </script>
 
 <template>
   <nav class="tabs" role="tablist">
     <button
-      v-for="t in tabs"
+      v-for="(t, i) in tabs"
+      :id="tabId(t.id)"
       :key="t.id"
       type="button"
       role="tab"
       :aria-selected="t.id === modelValue"
+      :aria-controls="panelId(t.id)"
+      :tabindex="t.id === modelValue ? 0 : -1"
       :class="{ active: t.id === modelValue }"
       @click="emit('update:modelValue', t.id)"
+      @keydown="onKey($event, i)"
     >
       {{ t.label }}
     </button>
