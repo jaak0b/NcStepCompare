@@ -167,7 +167,12 @@ export class UndercutMesh {
       dx: number, dy: number, dz: number,
       n: [number, number, number],
     ) => {
-      pos.push(ax, ay, az, bx, by, bz, cx, cy, cz, ax, ay, az, cx, cy, cz, dx, dy, dz)
+      // Wind the triangles counter-clockwise seen from the side the normal points to.
+      const gx = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
+      const gy = (bz - az) * (cx - ax) - (bx - ax) * (cz - az)
+      const gz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+      if (gx * n[0] + gy * n[1] + gz * n[2] >= 0) pos.push(ax, ay, az, bx, by, bz, cx, cy, cz, ax, ay, az, cx, cy, cz, dx, dy, dz)
+      else pos.push(ax, ay, az, cx, cy, cz, bx, by, bz, ax, ay, az, dx, dy, dz, cx, cy, cz)
       for (let k = 0; k < 6; k++) {
         nor.push(n[0], n[1], n[2])
         col.push(color.r, color.g, color.b)
