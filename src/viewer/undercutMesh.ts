@@ -8,11 +8,13 @@
 // change touches (a cell's side faces depend on its neighbours, so a change reaches one cell into
 // the next tile). The mesh is never decimated.
 //
-// With a comparison, each column's faces take the deviation class of the column on the final stock
-// (thread, gouge, leftover or within tolerance, the same classes and colours as the top surface);
-// without one they are stock grey.
+// With a comparison, every face is coloured by its own position (comparisonView.pointClass, the
+// rule of the top surface): the air at its height against the gouge limit of the gap's column, the
+// material against the leftover limit of the material's column. Ceiling and floor quads lie at one
+// height in one column; a side quad is split at the two limits into bands of one class each. Without
+// a comparison the faces are stock grey.
 import * as THREE from 'three'
-import { GOUGE_INTERVAL_BIT, LEFTOVER_INTERVAL_BIT, THREAD_BIT } from '../engine/comparisonView'
+import { pointClass, SurfaceClass, THREAD_BIT, type SurfaceClassValue } from '../engine/comparisonView'
 import { DEVIATION_COLORS } from './stockSurface'
 import type { GapRecord } from '../engine/dexelStock'
 import type { CellRect } from '../engine/simulation'
@@ -72,6 +74,8 @@ export class UndercutMesh {
   readonly material = new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true, side: THREE.DoubleSide })
   /** Class byte per cell from the comparison (see comparisonView), or null for plain stock. */
   private classes: Uint8Array | null = null
+  /** Gouge and leftover limit per cell, interleaved (see StockSurface.setLimits). */
+  private limits: Float32Array | null = null
   private readonly palette = {
     stock: new THREE.Color(STOCK_COLOR),
     thread: new THREE.Color(DEVIATION_COLORS.thread),
@@ -99,20 +103,24 @@ export class UndercutMesh {
     return tx < this.tilesX && ty < this.tilesY && this.meshes.has(ty * this.tilesX + tx)
   }
 
-  /** Colours the faces by the comparison's cell classes (null: plain stock) and rebuilds every tile. */
-  setClasses(classes: Uint8Array | null): void {
-    this.classes = classes
+  /** Colours the faces by the comparison limits and cell classes (null: plain stock) and rebuilds every tile. */
+  setComparison(limits: Float32Array | null, classes: Uint8Array | null): void {
+    this.limits = limits && classes ? limits : null
+    this.classes = limits && classes ? classes : null
     this.rebuild({ minI: 0, maxI: this.grid.nx - 1, minJ: 0, maxJ: this.grid.ny - 1 })
   }
 
-  private colorOf(c: number): THREE.Color {
-    const k = this.classes
-    if (!k) return this.palette.stock
-    const v = k[c]
-    if (v & THREAD_BIT) return this.palette.thread
-    if (v & GOUGE_INTERVAL_BIT) return this.palette.gouge
-    if (v & LEFTOVER_INTERVAL_BIT) return this.palette.leftover
+  private colorOfClass(k: SurfaceClassValue): THREE.Color {
+    if (k === SurfaceClass.Thread) return this.palette.thread
+    if (k === SurfaceClass.Gouge) return this.palette.gouge
+    if (k === SurfaceClass.Leftover) return this.palette.leftover
     return this.palette.within
+  }
+
+  /** Colour of a face point at height z with the air in column `air` and the material in `material`. */
+  private colorAt(z: number, air: number, material: number): THREE.Color {
+    if (!this.limits || !this.classes) return this.palette.stock
+    return this.colorOfClass(pointClass(z, this.limits[air * 2], (this.classes[air] & THREAD_BIT) !== 0, this.limits[material * 2 + 1]))
   }
 
   /** Rebuilds the tiles that a change of the cells in `rect` touches. */
@@ -186,7 +194,6 @@ export class UndercutMesh {
       const j = Math.floor(c / nx)
       const i = c - j * nx
       const top = this.heights[c]
-      color = this.colorOf(c)
       const x0 = xAt(i)
       const x1 = xAt(i + 1)
       const y0 = yAt(j)
@@ -195,8 +202,12 @@ export class UndercutMesh {
         const lo = g[k]
         const hi = g[k + 1]
         if (!(hi < top)) continue
+        color = this.colorAt(hi, c, c)
         quad(x0, y0, hi, x1, y0, hi, x1, y1, hi, x0, y1, hi, [0, 0, -1])
-        if (lo > bottom) quad(x0, y0, lo, x1, y0, lo, x1, y1, lo, x0, y1, lo, [0, 0, 1])
+        if (lo > bottom) {
+          color = this.colorAt(lo, c, c)
+          quad(x0, y0, lo, x1, y0, lo, x1, y1, lo, x0, y1, lo, [0, 0, 1])
+        }
       }
       // Sides towards the four neighbours where this column's gaps meet the neighbour's material.
       // The opposite case (the neighbour's gap against this column's material) is drawn when the
@@ -217,7 +228,20 @@ export class UndercutMesh {
         for (let k = 0; k < seg.length; k += 2) {
           const lo = seg[k]
           const hi = Math.min(seg[k + 1], nTop)
-          if (hi > lo) quad(ax, ay, lo, bx, by, lo, bx, by, hi, ax, ay, hi, n)
+          if (!(hi > lo)) continue
+          // Bands of one class: split at the gap column's gouge limit and the neighbour's leftover limit.
+          const cuts = [lo, hi]
+          if (this.limits) {
+            for (const z of [this.limits[c * 2], this.limits[nc * 2 + 1]]) if (z > lo && z < hi) cuts.push(z)
+            cuts.sort((p, q) => p - q)
+          }
+          for (let b = 0; b + 1 < cuts.length; b++) {
+            const z0 = cuts[b]
+            const z1 = cuts[b + 1]
+            if (!(z1 > z0)) continue
+            color = this.colorAt((z0 + z1) / 2, c, nc)
+            quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, n)
+          }
         }
       }
     }

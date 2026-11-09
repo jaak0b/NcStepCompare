@@ -25,12 +25,16 @@
 //
 // With STEP parts placed, a second texture holds two heights per cell from the comparison: below the
 // first the cell is a gouge, above the second it is leftover. The fragment shader compares the shown
-// machined height with them, so the deviation colours follow playback with no extra work. Each
-// fragment takes the class of the highest of the cells around it, so a wall is coloured by its
-// material side. Cells outside the part outlines are compared with the stock bottom, so material
-// left there shows as leftover. A third texture holds a class byte per cell (see comparisonView):
-// cells of a thread finding are drawn in the thread colour instead of the gouge colour, and the
-// bottom face is coloured by whether the part above it sits on the stock bottom (never as a gouge).
+// height of each fragment with them, so the deviation colours follow playback with no extra work.
+// Each fragment is classified by its own position (comparisonView.surfaceClassAt): the air at its
+// height against the gouge limit of the air's column, the material against the leftover limit of
+// the material's column. So a wall is coloured over its full height by where it stands against the
+// model, not by the top of a neighbouring cell. Cells outside the part outlines are compared with the
+// stock bottom, so material left there shows as leftover. A third texture holds a class byte per
+// cell (see comparisonView): cells of a thread finding are drawn in the thread colour instead of the
+// gouge colour, and the bottom face under part material is coloured by whether the part sits on the
+// stock bottom; outside the parts and in their through-holes it takes its own column's class (never
+// a gouge).
 //
 // Drawing cost is bounded per frame with chunked level of detail (Ulrich, "Rendering massive
 // terrains using chunked level of detail control", 2002), driven by a screen-space error bound:
@@ -55,6 +59,7 @@
 // always drawn at full resolution. A clipping plane (three.js clippingPlanes) cuts the drawn faces
 // to look into holes; it never changes the material data.
 import * as THREE from 'three'
+import { HEIGHT_ROUNDING_MM } from '../engine/comparisonView'
 import type { CellRect } from '../engine/simulation'
 import type { StockGaps } from './undercutMesh'
 import type { GridInfo } from '../workers/simulationMessages'
@@ -242,30 +247,61 @@ void main() {
     } else if (bottomClass == 2u) {
       color = uLeftoverColor;
     } else {
-      // Outside every part: the class of the cell's top, never a gouge.
+      // Outside every part and in its through-holes: the class of the cell's own column, never a
+      // gouge (comparisonView.bottomFaceClass).
       float h = texelFetch(uHeights, c, 0).r;
       color = h > texelFetch(uLimits, c, 0).g ? uLeftoverColor : uWithinColor;
     }
   }
 #else
   if (uCompare) {
-    // A fragment lies between the centres of up to 2 x 2 cells. It takes the class of the highest of
-    // them: a wall is the slope from a high cell down to a low one, so the wall shows the material
-    // side's colour over its full height (part walls, hole walls and the side walls alike).
-    ivec2 base = ivec2(floor((vXY - uOrigin) / uCellSize - 0.5));
-    ivec2 c = clamp(base, ivec2(0), uGridSize - 1);
-    float h = texelFetch(uHeights, c, 0).r;
-    for (int k = 1; k < 4; k++) {
+    // The point's own class (comparisonView.surfaceClassAt, mirrored here): the air at its height is
+    // tested against the gouge limit of the air's column, the material against the leftover limit of
+    // the material's column. The own cell decides when it holds material (or air) at that height,
+    // else the nearest of the 2 x 2 cells around the point that does.
+    float z = vHeight;
+    vec2 f = (vXY - uOrigin) / uCellSize;
+    ivec2 own = clamp(ivec2(floor(f)), ivec2(0), uGridSize - 1);
+    float hOwn = texelFetch(uHeights, own, 0).r;
+    bool ownGap = uHasGaps && inGap(own, z);
+    bool haveMaterial = hOwn >= z - ${HEIGHT_ROUNDING_MM} && !ownGap;
+    bool haveAir = hOwn <= z + ${HEIGHT_ROUNDING_MM} || ownGap;
+    ivec2 material = own;
+    ivec2 air = own;
+    ivec2 highest = own;
+    float hHighest = hOwn;
+    float bestMaterial = 1e30;
+    float bestAir = 1e30;
+    bool ownMaterial = haveMaterial;
+    bool ownAir = haveAir;
+    ivec2 base = ivec2(floor(f - 0.5));
+    for (int k = 0; k < 4; k++) {
       ivec2 n = clamp(base + ivec2(k & 1, k >> 1), ivec2(0), uGridSize - 1);
       float hn = texelFetch(uHeights, n, 0).r;
-      if (hn > h) {
-        h = hn;
-        c = n;
+      vec2 off = vec2(n) + 0.5 - f;
+      float d = dot(off, off);
+      bool gap = uHasGaps && inGap(n, z);
+      if (hn > hHighest) {
+        hHighest = hn;
+        highest = n;
+      }
+      if (!ownMaterial && hn >= z - ${HEIGHT_ROUNDING_MM} && !gap && d < bestMaterial) {
+        bestMaterial = d;
+        material = n;
+        haveMaterial = true;
+      }
+      if (!ownAir && (hn <= z + ${HEIGHT_ROUNDING_MM} || gap) && d < bestAir) {
+        bestAir = d;
+        air = n;
+        haveAir = true;
       }
     }
-    vec2 limit = texelFetch(uLimits, c, 0).rg;
-    bool thread = (texelFetch(uClasses, c, 0).r & 4u) != 0u;
-    color = h < limit.r ? (thread ? uThreadColor : uGougeColor) : (h > limit.g ? uLeftoverColor : uWithinColor);
+    if (!haveMaterial) material = highest;
+    // No column with air at z: the air lies outside the stock (its side walls), never a gouge.
+    float gougeBelow = haveAir ? texelFetch(uLimits, air, 0).r : ${NO_LIMIT.toExponential()};
+    bool thread = haveAir && (texelFetch(uClasses, air, 0).r & 4u) != 0u;
+    float leftoverAbove = texelFetch(uLimits, material, 0).g;
+    color = z < gougeBelow ? (thread ? uThreadColor : uGougeColor) : (z > leftoverAbove ? uLeftoverColor : uWithinColor);
   }
 #endif
   vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));

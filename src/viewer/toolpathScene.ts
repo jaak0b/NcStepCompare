@@ -256,7 +256,7 @@ export class ToolpathScene {
   /** Colours the stock by the comparison limits and cell classes (see StockSurface.setLimits), or plain for null. */
   setStockLimits(limits: Float32Array | null, classes: Uint8Array | null): void {
     this.stockSurface?.setLimits(limits, classes)
-    this.undercuts?.setClasses(limits ? classes : null)
+    this.undercuts?.setComparison(limits, classes)
     this.requestRender()
   }
 
