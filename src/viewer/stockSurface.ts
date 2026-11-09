@@ -520,12 +520,27 @@ export class StockSurface {
    */
   updateGaps(gaps: StockGaps, rect: CellRect | null): void {
     const { nx, ny } = this.grid
-    if (gaps.columns.size === 0 && !this.uniforms.uHasGaps.value) return
-    const full = rect === null || !this.uniforms.uHasGaps.value || this.gapPairsUsed > 4 * 1024 * 1024
+    if (gaps.columns.size === 0) {
+      // No gaps in the shown state (for example after seeking back): the gap test goes off again.
+      if (!this.uniforms.uHasGaps.value) return
+      this.uniforms.uHasGaps.value = false
+      this.tileGaps.fill(0)
+      this.gapPairsUsed = 0
+      this.gapIndex.dispose()
+      this.gapData.dispose()
+      this.gapIndex = StockSurface.gapIndexTexture(new Uint32Array(2), 1, 1)
+      this.gapData = StockSurface.gapDataTexture(new Float32Array(2 * GAP_TEX_WIDTH), 1)
+      this.uniforms.uGapIndex.value = this.gapIndex
+      this.uniforms.uGapData.value = this.gapData
+      return
+    }
+    let total = 0
+    for (const g of gaps.columns.values()) total += g.length / 2
+    // The pair list is append-only between rebuilds; rebuild (compact) when stale pairs dominate.
+    const stale = this.gapPairsUsed > 2 * total && this.gapPairsUsed > GAP_TEX_WIDTH
+    const full = rect === null || !this.uniforms.uHasGaps.value || stale
     if (full) {
       // Rebuild both textures from the whole mirror.
-      let total = 0
-      for (const g of gaps.columns.values()) total += g.length / 2
       const index = new Uint32Array(nx * ny * 2)
       const rows = Math.max(1, Math.ceil((total * 2) / GAP_TEX_WIDTH))
       const data = new Float32Array(rows * GAP_TEX_WIDTH * 2)
@@ -540,6 +555,8 @@ export class StockSurface {
       this.gapData.dispose()
       this.gapIndex = StockSurface.gapIndexTexture(index, nx, ny)
       this.gapData = StockSurface.gapDataTexture(data, rows)
+      this.renderer.initTexture(this.gapIndex)
+      this.renderer.initTexture(this.gapData)
       this.gapPairsUsed = p
       this.tileGaps.fill(0)
       for (const c of gaps.columns.keys()) this.markGapTile(c)
@@ -555,13 +572,16 @@ export class StockSurface {
         for (let i = r.minI; i <= r.maxI; i++) needed += (gaps.columns.get(j * nx + i)?.length ?? 0) / 2
       }
       let data = this.gapData.image.data as Float32Array
+      const firstPair = this.gapPairsUsed
+      let grown = false
       if (needed * 2 > data.length) {
+        grown = true
         const rows = Math.ceil((needed * 4) / GAP_TEX_WIDTH)
-        const grown = new Float32Array(rows * GAP_TEX_WIDTH * 2)
-        grown.set(data)
+        const larger = new Float32Array(rows * GAP_TEX_WIDTH * 2)
+        larger.set(data)
         this.gapData.dispose()
-        this.gapData = StockSurface.gapDataTexture(grown, rows)
-        data = grown
+        this.gapData = StockSurface.gapDataTexture(larger, rows)
+        data = larger
       }
       for (let j = r.minJ; j <= r.maxJ; j++) {
         for (let i = r.minI; i <= r.maxI; i++) {
@@ -579,7 +599,16 @@ export class StockSurface {
           index[c * 2 + 1] = patch[q + 1]
         }
       }
-      this.gapData.needsUpdate = true
+      if (grown) {
+        this.gapData.needsUpdate = true
+      } else if (this.gapPairsUsed > firstPair) {
+        // Upload only the rows the new pairs went into.
+        const row0 = Math.floor(firstPair / GAP_TEX_WIDTH)
+        const row1 = Math.floor((this.gapPairsUsed - 1) / GAP_TEX_WIDTH)
+        const rowsTex = StockSurface.gapDataTexture(data.slice(row0 * GAP_TEX_WIDTH * 2, (row1 + 1) * GAP_TEX_WIDTH * 2), row1 - row0 + 1)
+        this.renderer.copyTextureToTexture(rowsTex, this.gapData, null, new THREE.Vector2(0, row0))
+        rowsTex.dispose()
+      }
       const tex = StockSurface.gapIndexTexture(patch, w, h)
       this.renderer.copyTextureToTexture(tex, this.gapIndex, null, new THREE.Vector2(r.minI, r.minJ))
       tex.dispose()
