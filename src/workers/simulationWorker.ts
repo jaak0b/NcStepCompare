@@ -9,6 +9,8 @@ import { moveFindings, type FindingMoves } from '../engine/findings/moveFindings
 import { analyseStock } from '../engine/findings/stockFindings'
 import { cellClasses, missingMaterial } from '../engine/comparisonView'
 import { mergePartGrids, rasterizePart } from '../engine/modelGrid'
+import { expectedSolid, intervalDeviation } from '../engine/intervalDeviation'
+import { createDexelStock, type DexelStock } from '../engine/dexelStock'
 import { MaterialSimulation, planCheckpoints } from '../engine/simulation'
 import { cutterProfile, type CutterProfile } from '../engine/toolShape'
 import type { SimulationRequest, SimulationResponse } from './simulationMessages'
@@ -16,6 +18,8 @@ import type { SimulationRequest, SimulationResponse } from './simulationMessages
 let sim: MaterialSimulation | null = null
 /** Grid after the last move, for auto-orient. */
 let finalHeights: Float32Array | null = null
+/** Stock after the last move with its undercut gaps, for the comparison and findings. */
+let finalStock: DexelStock | null = null
 let moves: FindingMoves | null = null
 /** Tool numbers of the thread mills in the tool table. */
 let threadMills = new Set<number>()
@@ -52,7 +56,11 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
   sim = s
   moves = req.moves
   threadMills = new Set(req.tools.filter((t) => t.kind === 'thread mill').map((t) => t.number))
-  finalHeights = s.grid.heights.slice()
+  const fs = createDexelStock(req.stock, req.cellSize)
+  fs.heights.set(s.grid.heights)
+  fs.dexels.apply(s.grid.dexels.record(0, s.grid.nx - 1, 0, s.grid.ny - 1))
+  finalStock = fs
+  finalHeights = fs.heights
   const findings = [
     ...moveFindings(req.moves, s, req.tools),
     ...spoilboardFindings(req.moves, req.stock.min.z),
@@ -154,6 +162,10 @@ function runCompare() {
     const limits = toleranceLimits(g, model, req.tolerances, g.bottom)
     const t2 = performance.now()
     comparison = new DeviationTracker(g.nx, model, limits, g.bottom, g.heights)
+    // Undercuts (thread grooves) are compared as Z intervals per column. The expected solid comes
+    // from the height model for now: the model dexels of the fixture STEP show folded wall strips
+    // that the owner has to decide on first.
+    const deviation = intervalDeviation(finalStock!, expectedSolid(g, model, [], g.bottom), req.tolerances)
     // Findings are on the final stock, whatever move playback shows.
     const { findings, threadMask } = analyseStock({
       grid: g,
@@ -164,6 +176,7 @@ function runCompare() {
       moveTool: moves!.tool,
       moveLine: moves!.line,
       threadMills,
+      deviation,
     })
     const classes = cellClasses(model, threadMask, g.bottom, req.tolerances.leftover)
     const missing = missingMaterial(finalHeights!, model, limits, threadMask)

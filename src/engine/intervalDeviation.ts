@@ -1,9 +1,10 @@
 // Deviation of the dexel stock from the model as Z intervals per column, so undercuts (thread
 // grooves, T-slots) are compared, not only the top heights.
 //
-// Expected solid E per column: the material intervals of the parts' model dexels, together with
-// everything below the part bottom inside a part outline, below the through-hole's part bottom in
-// a through-hole, and below the stock bottom outside every outline (the classification comes from
+// Expected solid E per column: the material intervals of the parts' model dexels (without them,
+// everything below the model top), together with everything below the part bottom inside a part
+// outline, below the through-hole's part bottom in a through-hole, and below the stock bottom
+// outside every outline (the classification comes from
 // the model grid, the same one the height comparison uses). The tolerance zone is the one of
 // deviation.ts in three dimensions (ISO 1101 zone in the L-infinity norm, a cube of half-size tol):
 //   gouge    = (E eroded by the cube of the gouge tolerance) minus S, inside the stock
@@ -107,7 +108,9 @@ export function expectedSolid(g: GridGeometry, model: ModelGrid, parts: PartMode
     const floor = Number.isNaN(top) ? stockBottom : top === MODEL_THROUGH ? model.throughFloor[c] : model.partBottom[c]
     const own = extra.get(c)
     if (own) out.pushAll(union([-Infinity, floor], own))
-    else out.push(-Infinity, floor)
+    // A solid cell without model dexels (none given, or none on this centre): the height model's
+    // own statement, material up to its top.
+    else out.push(-Infinity, Number.isNaN(top) || top === MODEL_THROUGH ? floor : top)
     out.end(c)
   }
   return out.result()

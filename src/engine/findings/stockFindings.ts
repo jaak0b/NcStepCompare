@@ -10,7 +10,15 @@
 // holds in a through-hole (no material, no limit), on a blind hole's floor, and on the rim cells
 // within tolerance of either; it fails for a solid island. Thread data is not in the STEP export, so
 // the G-code decides.
+//
+// With the interval deviation (dexel stock against model dexels, see intervalDeviation), a column
+// is a gouge or leftover cell when it holds a gouge or leftover interval anywhere along Z, so thread
+// grooves below the hole rim count as well. The clusters are then the components of these columns
+// in XY. A thread finding also gets its measured pitch (the median spacing of the groove intervals
+// in the column with the most of them, at least three) and major diameter (twice the largest distance of a cluster
+// cell centre from the cluster centre).
 import { cellDeviation, type ToleranceLimits } from '../deviation'
+import type { IntervalDeviation, IntervalSets } from '../intervalDeviation'
 import type { HeightGrid } from '../heightGrid'
 import type { ModelGrid } from '../modelGrid'
 import { enclosedCells, labelComponents, type CellBounds } from './clusters'
@@ -29,6 +37,17 @@ export interface StockFindingInput {
   moveLine: Int32Array
   /** Tool numbers that are thread mills. */
   threadMills: Set<number>
+  /** Deviation as Z intervals per column; when given it decides gouge and leftover cells. */
+  deviation?: IntervalDeviation
+}
+
+const has = (s: IntervalSets, c: number) => s.offsets[c + 1] > s.offsets[c]
+
+/** Longest interval of column c, 0 without one. */
+function longest(s: IntervalSets, c: number): number {
+  let best = 0
+  for (let k = s.offsets[c]; k < s.offsets[c + 1]; k += 2) best = Math.max(best, s.z[k + 1] - s.z[k])
+  return best
 }
 
 interface Cluster extends CellBounds {
@@ -44,7 +63,12 @@ interface Cluster extends CellBounds {
   minGougeLimit: number
 }
 
-function clusters(input: StockFindingInput, flags: Uint8Array, amount: (c: number) => number): { list: Cluster[]; labels: Int32Array } {
+function clusters(
+  input: StockFindingInput,
+  flags: Uint8Array,
+  amount: (c: number) => number,
+  intervals: IntervalSets | null,
+): { list: Cluster[]; labels: Int32Array } {
   const { nx, ny } = input.grid
   const { labels, count } = labelComponents(flags, nx, ny)
   const list: Cluster[] = Array.from({ length: count }, () => ({
@@ -79,6 +103,10 @@ function clusters(input: StockFindingInput, flags: Uint8Array, amount: (c: numbe
     const z = input.heights[c]
     if (z < k.minZ) k.minZ = z
     if (z > k.maxZ) k.maxZ = z
+    if (intervals && has(intervals, c)) {
+      k.minZ = Math.min(k.minZ, intervals.z[intervals.offsets[c]])
+      k.maxZ = Math.max(k.maxZ, intervals.z[intervals.offsets[c + 1] - 1])
+    }
     if (input.limits.gougeBelow[c] < k.minGougeLimit) k.minGougeLimit = input.limits.gougeBelow[c]
     const m = input.lastCut[c]
     if (m < 0 || !input.threadMills.has(input.moveTool[m])) k.allThreadMill = false
@@ -123,6 +151,37 @@ function enclosesModelHole(input: StockFindingInput, labels: Int32Array, label: 
   return inside.every((c) => input.limits.gougeBelow[c] < k.minGougeLimit)
 }
 
+/** Measured pitch and major diameter of a thread cluster from its groove intervals. */
+function threadRows(input: StockFindingInput, labels: Int32Array, label: number, gouge: IntervalSets, centre: { x: number; y: number }): FindingRow[] {
+  const { nx, cellSize, originX, originY } = input.grid
+  let most = -1
+  let mostCount = 0
+  let radius = 0
+  for (let c = 0; c < labels.length; c++) {
+    if (labels[c] !== label) continue
+    const count = (gouge.offsets[c + 1] - gouge.offsets[c]) / 2
+    if (count > mostCount) {
+      mostCount = count
+      most = c
+    }
+    const i = c % nx
+    const j = (c - i) / nx
+    radius = Math.max(radius, Math.hypot(originX + (i + 0.5) * cellSize - centre.x, originY + (j + 0.5) * cellSize - centre.y))
+  }
+  const rows: FindingRow[] = [{ label: 'Major diameter (cell centres)', value: mm(2 * radius), basis: 'measured' }]
+  if (mostCount >= 3) {
+    // Median spacing of the groove lower ends: the first and last turns are cut by a partial helix.
+    const spacings: number[] = []
+    for (let k = gouge.offsets[most] + 2; k < gouge.offsets[most + 1]; k += 2) spacings.push(gouge.z[k] - gouge.z[k - 2])
+    spacings.sort((x, y) => x - y)
+    const m = spacings.length
+    const median = m % 2 === 1 ? spacings[(m - 1) / 2] : (spacings[m / 2 - 1] + spacings[m / 2]) / 2
+    rows.unshift({ label: 'Pitch', value: mm(median), basis: 'measured' })
+    rows.push({ label: 'Grooves in one column', value: String(mostCount), basis: 'measured' })
+  }
+  return rows
+}
+
 /** Gouge, thread and leftover findings on the final stock. */
 export function stockFindings(input: StockFindingInput): Finding[] {
   return analyseStock(input).findings
@@ -138,15 +197,18 @@ export function analyseStock(input: StockFindingInput): { findings: Finding[]; t
   const threadMask = new Uint8Array(nx * ny)
   const threadLabels = new Set<number>()
 
+  const dev = input.deviation ?? null
   const gougeFlags = new Uint8Array(n)
-  for (let c = 0; c < n; c++) gougeFlags[c] = heights[c] < limits.gougeBelow[c] ? 1 : 0
-  const gouges = clusters(input, gougeFlags, (c) => -deviation(c))
+  for (let c = 0; c < n; c++) gougeFlags[c] = (dev ? has(dev.gouge, c) : heights[c] < limits.gougeBelow[c]) ? 1 : 0
+  const gougeAmount = dev ? (c: number) => Math.max(-deviation(c), longest(dev.gouge, c)) : (c: number) => -deviation(c)
+  const gouges = clusters(input, gougeFlags, gougeAmount, dev ? dev.gouge : null)
   gouges.list.forEach((k, label) => {
     const { box, rows } = common(input, k)
     const at = cellCentre(input, k.peakCell)
     const thread = k.allThreadMill && enclosesModelHole(input, gouges.labels, label, k)
     if (thread) {
       threadLabels.add(label)
+      const centre = { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 }
       out.push({
         kind: 'thread',
         at,
@@ -155,8 +217,9 @@ export function analyseStock(input: StockFindingInput): { findings: Finding[]; t
         toolpath: null,
         rank: at.x * 1e6 + at.y,
         rows: [
-          { label: 'Centre', value: position({ x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2, z: k.maxZ }), basis: 'measured' },
+          { label: 'Centre', value: position({ ...centre, z: k.maxZ }), basis: 'measured' },
           ...rows,
+          ...(dev ? threadRows(input, gouges.labels, label, dev.gouge, centre) : []),
           ...lastCutRow(input, k.peakCell),
         ],
       })
@@ -181,8 +244,9 @@ export function analyseStock(input: StockFindingInput): { findings: Finding[]; t
   for (let c = 0; c < n; c++) if (threadLabels.has(gouges.labels[c])) threadMask[c] = 1
 
   const leftoverFlags = new Uint8Array(n)
-  for (let c = 0; c < n; c++) leftoverFlags[c] = heights[c] > limits.leftoverAbove[c] ? 1 : 0
-  const leftover = clusters(input, leftoverFlags, deviation)
+  for (let c = 0; c < n; c++) leftoverFlags[c] = (dev ? has(dev.leftover, c) : heights[c] > limits.leftoverAbove[c]) ? 1 : 0
+  const leftoverAmount = dev ? (c: number) => Math.max(deviation(c), longest(dev.leftover, c)) : deviation
+  const leftover = clusters(input, leftoverFlags, leftoverAmount, dev ? dev.leftover : null)
   for (const k of leftover.list) {
     const { box, rows } = common(input, k)
     const at = cellCentre(input, k.peakCell)
