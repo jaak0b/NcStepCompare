@@ -224,6 +224,12 @@ function startSimulation() {
     fluteLength: t.fluteLength,
     widthOfCutLimit: t.widthOfCutLimit,
     depthOfCutLimit: t.depthOfCutLimit,
+    pitch: t.pitch,
+    profileAngle: t.profileAngle,
+    teeth: t.teeth,
+    toothTipFlat: t.toothTipFlat,
+    neckDiameter: t.neckDiameter,
+    toothOffset: t.toothOffset,
     sources: { ...t.sources },
   }))
   const box = stock.value.box
