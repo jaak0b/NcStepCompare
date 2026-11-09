@@ -166,13 +166,12 @@ export function sweepMove(
       const w2 = wx * wx + wy * wy
       if (bandTool) {
         if (bandFloor >= h[row + i]) continue
-        const removed = bandCut(dex!, row + i, wx, wy, w2, z0, dx, dy, dz, a, tool, h[row + i], bottom)
+        const removed = bandCut(dex!, h, row + i, wx, wy, w2, z0, dx, dy, dz, a, tool, bottom)
         if (removed < 0) continue
         if (removed > 0) {
           volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
-          const contact = dex!.lastHighestRemoved - bandTipZ
-          if (contact > out.contactHeight) out.contactHeight = contact
+          if (bandContact > out.contactHeight) out.contactHeight = bandContact
         }
         if (lastCut) lastCut[row + i] = moveIndex
         if (i < out.minI) out.minI = i
@@ -286,8 +285,11 @@ export function sweepMove(
   return out
 }
 
-/** Tool tip Z at the point of the move where the last `bandCut` reached lowest. */
-let bandTipZ = 0
+/**
+ * Contact height of the last `bandCut`: per band, the highest material it removed above the tool tip
+ * at the point of the move where that band reached lowest; the largest over the bands, 0 for none.
+ */
+let bandContact = 0
 
 /**
  * Cuts one column with every band of the tool (see the header). Returns the thickness of material
@@ -295,6 +297,7 @@ let bandTipZ = 0
  */
 function bandCut(
   dex: DexelGaps,
+  heights: Float32Array,
   c: number,
   wx: number,
   wy: number,
@@ -305,11 +308,10 @@ function bandCut(
   dz: number,
   a: number,
   tool: CutterProfile,
-  top: number,
   bottom: number,
 ): number {
   let total = -1
-  let lowest = Infinity
+  bandContact = 0
   const b = wx * dx + wy * dy
   // Closest distance from the column to the tool axis over the move.
   let tc = a > 0 ? b / a : 0
@@ -326,7 +328,8 @@ function bandCut(
     // a is non-decreasing and b non-increasing in d, so the band stays inside these bounds.
     const lowBound = zMin + boundaryHeight(band.lower!, dMin)
     const highBound = band.upper.length > 0 ? zMax + boundaryHeight(band.upper, dMin) : Infinity
-    if (Math.fround(lowBound) >= top || Math.fround(highBound) <= bottom) continue
+    // The top is read live: an earlier band of this move may have lowered it.
+    if (Math.fround(lowBound) >= heights[c] || Math.fround(highBound) <= bottom) continue
     if (dex.insideGap(c, lowBound, highBound)) continue
     let zLow: number
     let zHigh: number
@@ -349,9 +352,9 @@ function bandCut(
     const r = dex.subtract(c, zLow, zHigh)
     if (r < 0) continue
     total = total < 0 ? r : total + r
-    if (zLow < lowest) {
-      lowest = zLow
-      bandTipZ = z0 + tLow * dz
+    if (r > 0) {
+      const contact = dex.lastHighestRemoved - (z0 + tLow * dz)
+      if (contact > bandContact) bandContact = contact
     }
   }
   return total

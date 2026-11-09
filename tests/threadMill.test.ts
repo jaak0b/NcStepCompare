@@ -34,11 +34,11 @@ const preDrill: CutterShape = { kind: 'flat end mill', diameter: 2.5, cornerRadi
 const stock = { min: { x: 0, y: 0, z: -10 }, max: { x: 10, y: 10, z: 0 } }
 const PRE_DRILL = 'T1 M6\nG0 X5.025 Y5.025 Z5\nG1 Z-6 F100\nG0 Z5\n'
 
-function simulate(threadMoves: string, checkpointInterval = 0) {
+function simulate(threadMoves: string, checkpointInterval = 0, mill: CutterShape = threadMill) {
   const job = parseGcode(PRE_DRILL + 'T2 M6\nG0 X5.025 Y5.025 Z5\n' + threadMoves + 'G1 X5.025 Y5.025\nG0 Z5\n')
   const tools = new Map([
     [1, profile(preDrill)],
-    [2, profile(threadMill)],
+    [2, profile(mill)],
   ])
   const checkpoints = checkpointInterval > 0 ? planCheckpoints(job.moves, checkpointInterval) : []
   const sim = new MaterialSimulation(stock, 0.05, job.moves, tools, checkpoints)
@@ -97,6 +97,41 @@ describe('thread grooves in playback', () => {
     expect(atStart).toEqual([])
     expect(atEnd).toHaveLength(10)
     expect(atEnd[4] - atEnd[2]).toBeCloseTo(0.5, 5)
+  })
+
+  // Two teeth one pitch apart. Playback state after seeking back and forward again must equal the
+  // state of a run that never seeked: every height and every gap.
+  it.each([
+    ['one tooth', threadMill],
+    ['two teeth', { ...threadMill, teeth: 2 }],
+  ] as [string, CutterShape][])('restores every height and gap after seeking (%s)', (_name, mill) => {
+    const helix = 'G1 Z-5 F100\nG1 X5.315\n' + 'G91\nG3 X0 Y0 I-0.29 J0 Z0.5\nG3 X0 Y0 I-0.29 J0 Z0.5\nG3 X0 Y0 I-0.29 J0 Z0.5\nG90\n'
+    const reference = simulate(helix, 0, mill)
+    const sim = simulate(helix, 20, mill)
+    const end = sim.current
+    const all = (m: MaterialSimulation) => m.grid.dexels.record(0, m.grid.nx - 1, 0, m.grid.ny - 1)
+
+    sim.seek(37)
+    sim.seek(0)
+    sim.seek(end)
+
+    expect(sim.grid.heights).toEqual(reference.grid.heights)
+    expect(all(sim)).toEqual(all(reference))
+  })
+})
+
+describe('contact height of a thread mill plunge', () => {
+  // Plunge from Z 5 to Z -3 into untouched stock (top Z 0): material up to 3 mm above the tip.
+  it.each([
+    ['one tooth', threadMill],
+    ['two teeth', { ...threadMill, teeth: 2 }],
+  ] as [string, CutterShape][])('measures 3 mm (%s)', (_name, mill) => {
+    const job = parseGcode('T2 M6\nG0 X2 Y2 Z5\nG1 Z-3 F100\n')
+    const sim = new MaterialSimulation(stock, 0.05, job.moves, new Map([[2, profile(mill)]]), [])
+
+    sim.advanceTo(job.moves.count)
+
+    expect(sim.contactHeight[job.moves.count - 1]).toBeCloseTo(3, 5) // the plunge, the last move
   })
 })
 
