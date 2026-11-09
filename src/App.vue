@@ -6,9 +6,11 @@ import JobSummary from './components/JobSummary.vue'
 import PartPanel from './components/PartPanel.vue'
 import PlaybackControls from './components/PlaybackControls.vue'
 import SimulationPanel from './components/SimulationPanel.vue'
+import StatusLine from './components/StatusLine.vue'
 import TimePanel from './components/TimePanel.vue'
 import ToolTable from './components/ToolTable.vue'
 import ToolpathViewer from './components/ToolpathViewer.vue'
+import WorkflowTabs from './components/WorkflowTabs.vue'
 import type { OrientationCandidate } from './engine/autoOrient'
 import { sortFindings, type Finding } from './engine/findings/finding'
 import { DEFAULT_GOUGE_TOLERANCE_MM, DEFAULT_LEFTOVER_TOLERANCE_MM, type DeviationSummary, type Tolerances } from './engine/deviation'
@@ -30,6 +32,17 @@ import type { SimulationReady } from './workers/simulationMessages'
 const loaded = shallowRef<LoadedJob | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+/** True when the parser refused the last file (for example a rotary axis). */
+const jobRefused = ref(false)
+type WorkflowTab = 'job' | 'tools' | 'parts' | 'check' | 'info'
+const TABS: { id: WorkflowTab; label: string }[] = [
+  { id: 'job', label: 'Job' },
+  { id: 'tools', label: 'Tools' },
+  { id: 'parts', label: 'Parts' },
+  { id: 'check', label: 'Check' },
+  { id: 'info', label: 'Info' },
+]
+const activeTab = ref<WorkflowTab>('job')
 const hiddenToolpaths = ref(new Set<number>())
 const rapidsVisible = ref(true)
 
@@ -472,6 +485,7 @@ async function onFileChosen(event: Event) {
   if (!file) return
   loading.value = true
   error.value = null
+  jobRefused.value = false
   // The old job goes away now, so a failed load never leaves its simulation on screen.
   resetSimulation()
   loaded.value = null
@@ -485,6 +499,7 @@ async function onFileChosen(event: Event) {
     })
     startSimulation()
   } catch (err) {
+    jobRefused.value = err instanceof JobRefusedError
     error.value = err instanceof JobRefusedError
       ? `Job refused (${file.name}): ${err.message}`
       : `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -535,28 +550,47 @@ function setAllToolpaths(visible: boolean) {
     <aside class="side">
       <header>
         <h1>NcStepCompare</h1>
+        <StatusLine
+          :job-loaded="loaded !== null"
+          :refused="jobRefused"
+          :warning-count="loaded?.job.warnings.length ?? 0"
+          :sim-status="simStatus"
+          :sim-progress="simProgress"
+          :sim-ms="simResult?.simMs ?? null"
+          :findings="findings"
+          :compared="placedParts.length > 0"
+          :comparison-running="comparisonRunning"
+        />
+        <WorkflowTabs v-model="activeTab" :tabs="TABS" />
+      </header>
+
+      <div v-show="activeTab === 'job'" class="tab">
         <label class="file">
           Open G-code file (.nc)
           <input type="file" accept=".nc,.gcode,.ngc,.tap,.txt" :disabled="loading" @change="onFileChosen" />
         </label>
         <p v-if="loading" class="status">Reading and parsing the file.</p>
         <p v-if="error" class="error">{{ error }}</p>
-        <p v-if="toolEditProblem" class="error">{{ toolEditProblem }}</p>
-      </header>
-      <template v-if="loaded">
-        <SimulationPanel
-          :status="simStatus"
-          :progress="simProgress"
-          :result="simResult"
-          :error="simError"
-          :stock-source="stock?.source ?? null"
-          :cell-size="cellSize"
-          :cell-size-source="cellSizeSource"
-          :cell-size-problem="cellSizeError"
-          :frame-timing="frameTiming"
-          @update:cell-size="onCellSize"
+        <JobSummary
+          v-if="loaded"
+          v-model:rapids-visible="rapidsVisible"
+          :loaded="loaded"
+          :stock-box="stock?.source === 'header' ? stockBox : null"
+          :hidden-toolpaths="hiddenToolpaths"
+          @toggle-toolpath="toggleToolpath"
+          @set-all-toolpaths="setAllToolpaths"
         />
-        <section>
+        <p v-else-if="!loading" class="status">Open a .nc file to view its toolpaths.</p>
+      </div>
+
+      <div v-show="activeTab === 'tools'" class="tab">
+        <p v-if="toolEditProblem" class="error">{{ toolEditProblem }}</p>
+        <ToolTable v-if="loaded" :tools="tools" @update="onToolsEdited" @reset="resetTool" />
+        <p v-else class="status">Open a .nc file on the Job tab to see its tools.</p>
+      </div>
+
+      <div v-show="activeTab === 'parts'" class="tab">
+        <section v-if="loaded">
           <h2>STEP parts</h2>
           <label class="file">
             Add STEP files (.step, .stp)
@@ -584,44 +618,61 @@ function setAllToolpaths(visible: boolean) {
             @remove="removePart(p.id)"
           />
         </section>
-        <ComparisonPanel
-          v-if="placedParts.length > 0"
-          :tolerances="tolerances"
-          :sources="toleranceSources"
-          :cell-size="cellSize"
-          :deviation="deviation"
-          :shown-move="shownIndex"
-          :timing="comparisonTiming"
-          :deflection="deflection"
-          :running="comparisonRunning"
-          :error="comparisonError"
-          :outlines-visible="outlinesVisible"
-          :missing-visible="missingVisible"
-          @tolerance="setTolerance"
-          @update:outlines-visible="outlinesVisible = $event"
-          @update:missing-visible="missingVisible = $event"
-        />
-        <FindingsPanel
-          v-if="simStatus === 'ready'"
-          :findings="findings"
-          :selected="selectedFinding"
-          :compared="placedParts.length > 0"
-          :comparison-running="comparisonRunning"
-          :toolpaths="toolpathStarts"
-          @select="selectFinding"
-        />
-        <ToolTable :tools="tools" @update="onToolsEdited" @reset="resetTool" />
-        <JobSummary
-          v-model:rapids-visible="rapidsVisible"
-          :loaded="loaded"
-          :stock-box="stock?.source === 'header' ? stockBox : null"
-          :hidden-toolpaths="hiddenToolpaths"
-          @toggle-toolpath="toggleToolpath"
-          @set-all-toolpaths="setAllToolpaths"
-        />
-        <TimePanel :loaded="loaded" />
-      </template>
-      <p v-else-if="!loading" class="status">Open a .nc file to view its toolpaths.</p>
+        <p v-else class="status">Open a .nc file on the Job tab before adding STEP parts.</p>
+      </div>
+
+      <div v-show="activeTab === 'check'" class="tab">
+        <template v-if="loaded">
+          <ComparisonPanel
+            v-if="placedParts.length > 0"
+            :tolerances="tolerances"
+            :sources="toleranceSources"
+            :cell-size="cellSize"
+            :deviation="deviation"
+            :shown-move="shownIndex"
+            :timing="comparisonTiming"
+            :deflection="deflection"
+            :running="comparisonRunning"
+            :error="comparisonError"
+            :outlines-visible="outlinesVisible"
+            :missing-visible="missingVisible"
+            @tolerance="setTolerance"
+            @update:outlines-visible="outlinesVisible = $event"
+            @update:missing-visible="missingVisible = $event"
+          />
+          <p v-else class="status">Add a STEP part on the Parts tab to compare it with the simulation.</p>
+          <FindingsPanel
+            v-if="simStatus === 'ready'"
+            :findings="findings"
+            :selected="selectedFinding"
+            :compared="placedParts.length > 0"
+            :comparison-running="comparisonRunning"
+            :toolpaths="toolpathStarts"
+            @select="selectFinding"
+          />
+          <p v-else class="status">Findings appear once the simulation has finished.</p>
+        </template>
+        <p v-else class="status">Open a .nc file on the Job tab first.</p>
+      </div>
+
+      <div v-show="activeTab === 'info'" class="tab">
+        <template v-if="loaded">
+          <TimePanel :loaded="loaded" />
+          <SimulationPanel
+            :status="simStatus"
+            :progress="simProgress"
+            :result="simResult"
+            :error="simError"
+            :stock-source="stock?.source ?? null"
+            :cell-size="cellSize"
+            :cell-size-source="cellSizeSource"
+            :cell-size-problem="cellSizeError"
+            :frame-timing="frameTiming"
+            @update:cell-size="onCellSize"
+          />
+        </template>
+        <p v-else class="status">Open a .nc file on the Job tab first.</p>
+      </div>
     </aside>
     <main class="view">
       <div class="viewer-area">
@@ -667,7 +718,17 @@ function setAllToolpaths(visible: boolean) {
 }
 h1 {
   font-size: 18px;
-  margin: 0 0 8px;
+  margin: 0;
+}
+header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 .file {
   display: flex;
