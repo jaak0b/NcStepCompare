@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseGcode } from '../src/engine/gcodeParser'
-import { MaterialSimulation } from '../src/engine/simulation'
+import { MaterialSimulation, planCheckpoints } from '../src/engine/simulation'
 import { cutterProfile, type CutterProfile, type CutterShape } from '../src/engine/toolShape'
 import { buildToolTable, toolProblems, withToolValue } from '../src/engine/toolTable'
 
@@ -34,13 +34,14 @@ const preDrill: CutterShape = { kind: 'flat end mill', diameter: 2.5, cornerRadi
 const stock = { min: { x: 0, y: 0, z: -10 }, max: { x: 10, y: 10, z: 0 } }
 const PRE_DRILL = 'T1 M6\nG0 X5.025 Y5.025 Z5\nG1 Z-6 F100\nG0 Z5\n'
 
-function simulate(threadMoves: string) {
+function simulate(threadMoves: string, checkpointInterval = 0) {
   const job = parseGcode(PRE_DRILL + 'T2 M6\nG0 X5.025 Y5.025 Z5\n' + threadMoves + 'G1 X5.025 Y5.025\nG0 Z5\n')
   const tools = new Map([
     [1, profile(preDrill)],
     [2, profile(threadMill)],
   ])
-  const sim = new MaterialSimulation(stock, 0.05, job.moves, tools, [])
+  const checkpoints = checkpointInterval > 0 ? planCheckpoints(job.moves, checkpointInterval) : []
+  const sim = new MaterialSimulation(stock, 0.05, job.moves, tools, checkpoints)
   sim.advanceTo(job.moves.count)
   return sim
 }
@@ -78,6 +79,24 @@ describe('thread mill tooth profile on the dexel stock', () => {
     expect(lowerEnds[2] - lowerEnds[1]).toBeCloseTo(0.5, 5)
     expect(gaps(sim, 6.575)).toEqual([]) // 1.55 from the hole centre
     expect(sim.grid.heights[column(6.475)]).toBe(0)
+  })
+})
+
+describe('thread grooves in playback', () => {
+  // Checkpoints every 20 moves inside the helix; seeking back restores from them.
+  it('removes the grooves when seeking back to the start and restores them at the end', () => {
+    const helix = 'G1 Z-5 F100\nG1 X5.315\n' + 'G91\nG3 X0 Y0 I-0.29 J0 Z0.5\nG3 X0 Y0 I-0.29 J0 Z0.5\nG3 X0 Y0 I-0.29 J0 Z0.5\nG3 X0 Y0 I-0.29 J0 Z0.5\nG90\n'
+    const sim = simulate(helix, 20)
+    const end = sim.current
+
+    sim.seek(0)
+    const atStart = gaps(sim, 6.475)
+    sim.seek(end)
+    const atEnd = gaps(sim, 6.475)
+
+    expect(atStart).toEqual([])
+    expect(atEnd).toHaveLength(10)
+    expect(atEnd[4] - atEnd[2]).toBeCloseTo(0.5, 5)
   })
 })
 
