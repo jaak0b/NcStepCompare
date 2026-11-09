@@ -207,7 +207,14 @@ export class DexelGaps {
 
   /** Removes every gap. */
   clear(): void {
-    this.tiles.fill(null)
+    // Keep the tiles' arrays for reuse; every pool block is released with the pool.
+    for (const t of this.tiles) {
+      if (t === null) continue
+      t.offset.fill(-1)
+      t.count.fill(0)
+      t.capLog.fill(0)
+      t.used = 0
+    }
     this.free.length = 0
     this.poolUsed = 0
     this.gapColumnCount = 0
