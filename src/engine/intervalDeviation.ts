@@ -27,21 +27,6 @@ export interface IntervalSets {
 
 type Spans = number[]
 
-function build(count: number, get: (c: number) => Spans): IntervalSets {
-  const offsets = new Int32Array(count + 1)
-  const parts: Spans[] = new Array(count)
-  let total = 0
-  for (let c = 0; c < count; c++) {
-    parts[c] = get(c)
-    offsets[c] = total
-    total += parts[c].length
-  }
-  offsets[count] = total
-  const z = new Float32Array(total)
-  for (let c = 0; c < count; c++) z.set(parts[c], offsets[c])
-  return { offsets, z }
-}
-
 const column = (s: IntervalSets, c: number): Spans => Array.from(s.z.subarray(s.offsets[c], s.offsets[c + 1]))
 
 /** Union of sorted interval sets; touching intervals merge. */
@@ -116,32 +101,83 @@ export function expectedSolid(g: GridGeometry, model: ModelGrid, parts: PartMode
       }
     }
   }
-  return build(g.nx * g.ny, (c) => {
+  const out = new SetsBuilder(g.nx * g.ny)
+  for (let c = 0; c < g.nx * g.ny; c++) {
     const top = model.top[c]
     const floor = Number.isNaN(top) ? stockBottom : top === MODEL_THROUGH ? model.throughFloor[c] : model.partBottom[c]
-    const base: Spans = [-Infinity, floor]
     const own = extra.get(c)
-    return own ? union(base, own) : base
-  })
+    if (own) out.pushAll(union([-Infinity, floor], own))
+    else out.push(-Infinity, floor)
+    out.end(c)
+  }
+  return out.result()
 }
 
+/**
+ * Column sets during the window passes. Most columns are one half-line (-Infinity, f]: those keep
+ * only f in `half`, and a window of them combines to the minimum (erode) or maximum (dilate) of f,
+ * which is the height comparison's own rule. Other columns (NaN in `half`) keep their spans.
+ */
+interface Columns {
+  half: Float32Array
+  spans: Map<number, Spans>
+}
+
+function toColumns(s: IntervalSets): Columns {
+  const count = s.offsets.length - 1
+  const half = new Float32Array(count)
+  const spans = new Map<number, Spans>()
+  for (let c = 0; c < count; c++) {
+    const o = s.offsets[c]
+    if (s.offsets[c + 1] - o === 2 && s.z[o] === -Infinity) half[c] = s.z[o + 1]
+    else {
+      half[c] = NaN
+      spans.set(c, column(s, c))
+    }
+  }
+  return { half, spans }
+}
+
+const spansOf = (s: Columns, c: number): Spans => (Number.isNaN(s.half[c]) ? s.spans.get(c)! : [-Infinity, s.half[c]])
+
 /** Intersection (erode) or union (dilate) over the square window of half-size n cells, separably. */
-function windowCombine(g: GridGeometry, s: IntervalSets, n: number, erode: boolean): IntervalSets {
+function windowCombine(g: GridGeometry, s: Columns, n: number, erode: boolean): Columns {
   const combine = erode ? intersect : union
-  const pass = (src: IntervalSets, alongX: boolean) =>
-    build(g.nx * g.ny, (c) => {
-      const j = Math.floor(c / g.nx)
-      const i = c - j * g.nx
-      let acc = column(src, c)
-      for (let d = -n; d <= n; d++) {
-        if (d === 0) continue
-        const qi = alongX ? i + d : i
-        const qj = alongX ? j : j + d
-        if (qi < 0 || qj < 0 || qi >= g.nx || qj >= g.ny) continue
-        acc = combine(acc, column(src, qj * g.nx + qi))
+  const pass = (src: Columns, alongX: boolean): Columns => {
+    const half = new Float32Array(src.half.length)
+    const spans = new Map<number, Spans>()
+    for (let j = 0; j < g.ny; j++) {
+      for (let i = 0; i < g.nx; i++) {
+        const c = j * g.nx + i
+        const lo = Math.max(0, (alongX ? i : j) - n)
+        const hi = Math.min((alongX ? g.nx : g.ny) - 1, (alongX ? i : j) + n)
+        const step = alongX ? 1 : g.nx
+        const first = alongX ? j * g.nx + lo : lo * g.nx + i
+        let simple = true
+        let f = erode ? Infinity : -Infinity
+        for (let k = 0, q = first; k <= hi - lo; k++, q += step) {
+          const v = src.half[q]
+          if (Number.isNaN(v)) {
+            simple = false
+            break
+          }
+          f = erode ? Math.min(f, v) : Math.max(f, v)
+        }
+        if (simple) {
+          half[c] = f
+          continue
+        }
+        let acc = spansOf(src, first)
+        for (let k = 1, q = first + step; k <= hi - lo; k++, q += step) acc = combine(acc, spansOf(src, q))
+        if (acc.length === 2 && acc[0] === -Infinity) half[c] = acc[1]
+        else {
+          half[c] = NaN
+          spans.set(c, acc)
+        }
       }
-      return acc
-    })
+    }
+    return { half, spans }
+  }
   return n === 0 ? s : pass(pass(s, true), false)
 }
 
@@ -155,19 +191,67 @@ export interface IntervalDeviation {
   leftover: IntervalSets
 }
 
+/** Builds interval sets column by column, in order. */
+class SetsBuilder {
+  readonly offsets: Int32Array
+  private z = new Float32Array(1024)
+  private used = 0
+  constructor(count: number) {
+    this.offsets = new Int32Array(count + 1)
+  }
+  push(lo: number, hi: number): void {
+    if (this.used + 2 > this.z.length) {
+      const next = new Float32Array(this.z.length * 2)
+      next.set(this.z)
+      this.z = next
+    }
+    this.z[this.used++] = lo
+    this.z[this.used++] = hi
+  }
+  pushAll(s: Spans): void {
+    for (let k = 0; k < s.length; k += 2) this.push(s[k], s[k + 1])
+  }
+  /** Closes column c (call for every column in order). */
+  end(c: number): void {
+    this.offsets[c + 1] = this.used
+  }
+  result(): IntervalSets {
+    return { offsets: this.offsets, z: this.z.slice(0, this.used) }
+  }
+}
+
 /** Gouge and leftover intervals of the stock against the expected solid. */
 export function intervalDeviation(stock: DexelStock, expected: IntervalSets, tol: { gouge: number; leftover: number }): IntervalDeviation {
-  const eroded = windowCombine(stock, expected, windowCells(stock.cellSize, tol.gouge), true)
-  const dilated = windowCombine(stock, expected, windowCells(stock.cellSize, tol.leftover), false)
+  const e = toColumns(expected)
+  const eroded = windowCombine(stock, e, windowCells(stock.cellSize, tol.gouge), true)
+  const dilated = windowCombine(stock, e, windowCells(stock.cellSize, tol.leftover), false)
   const count = stock.nx * stock.ny
-  const material = (c: number): Spans => {
+  const { bottom, top } = stock
+  const stockBox: Spans = [bottom, top]
+  const gouge = new SetsBuilder(count)
+  const leftover = new SetsBuilder(count)
+  for (let c = 0; c < count; c++) {
     const h = stock.heights[c]
-    if (!(h > stock.bottom)) return []
-    return subtract([stock.bottom, h], Array.from(stock.dexels.gapView(c)))
+    const gaps = stock.dexels.gapCount(c) > 0
+    const material: Spans | null = gaps ? (h > bottom ? subtract([bottom, h], Array.from(stock.dexels.gapView(c))) : []) : null
+    const fe = eroded.half[c]
+    if (material === null && !Number.isNaN(fe)) {
+      // One half-line against a column without gaps: the height comparison's rule.
+      const lo = h > bottom ? h : bottom
+      const hi = Math.min(fe - tol.gouge, top)
+      if (hi > lo) gouge.push(lo, hi)
+    } else {
+      gouge.pushAll(subtract(intersect(offset(spansOf(eroded, c), tol.gouge), stockBox), material ?? (h > bottom ? [bottom, h] : [])))
+    }
+    gouge.end(c)
+    const fd = dilated.half[c]
+    if (material === null && !Number.isNaN(fd)) {
+      const lo = Math.max(bottom, fd + tol.leftover)
+      if (h > lo) leftover.push(lo, h)
+    } else {
+      leftover.pushAll(subtract(material ?? (h > bottom ? [bottom, h] : []), offset(spansOf(dilated, c), -tol.leftover)))
+    }
+    leftover.end(c)
   }
-  const stockBox: Spans = [stock.bottom, stock.top]
-  return {
-    gouge: build(count, (c) => subtract(intersect(offset(column(eroded, c), tol.gouge), stockBox), material(c))),
-    leftover: build(count, (c) => subtract(material(c), offset(column(dilated, c), -tol.leftover))),
-  }
+  return { gouge: gouge.result(), leftover: leftover.result() }
 }
