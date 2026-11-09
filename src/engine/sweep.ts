@@ -114,6 +114,12 @@ export function sweepMove(
   const bandTool = !tool.classic
   if (bandTool && dex === null) throw new Error('A cutter with a tooth profile needs the dexel stock.')
   const anyGaps = dex !== null && dex.gapColumnCount > 0
+  // Lowest point a band tool can reach over the move: columns whose top is not above it are skipped.
+  let bandFloor = Infinity
+  if (bandTool) {
+    for (let k = 0; k < tool.bands.length; k++) bandFloor = Math.min(bandFloor, tool.bands[k].lower![0].h)
+    bandFloor = Math.fround(bandFloor + Math.min(z0, z1))
+  }
   if (record && len > 0 && !bandTool) out.widthOfCut = contactArcWidth(grid, x0, y0, z0, dx, dy, dz, len, tool)
   const lastCut = record ? record.lastCut : null
   const moveIndex = record ? record.moveIndex : 0
@@ -159,6 +165,7 @@ export function sweepMove(
       const wx = cx - x0
       const w2 = wx * wx + wy * wy
       if (bandTool) {
+        if (bandFloor >= h[row + i]) continue
         const removed = bandCut(dex!, row + i, wx, wy, w2, z0, dx, dy, dz, a, tool, h[row + i], bottom)
         if (removed < 0) continue
         if (removed > 0) {
@@ -311,7 +318,9 @@ function bandCut(
   const dMin = Math.sqrt(Math.max(0, (wx - tc * dx) * (wx - tc * dx) + (wy - tc * dy) * (wy - tc * dy)))
   const zMin = dz < 0 ? z0 + dz : z0
   const zMax = dz < 0 ? z0 : z0 + dz
-  for (const band of tool.bands) {
+  const bands = tool.bands
+  for (let bi = 0; bi < bands.length; bi++) {
+    const band = bands[bi]
     const rM = band.rMax
     if (dMin > rM) continue
     // a is non-decreasing and b non-increasing in d, so the band stays inside these bounds.
