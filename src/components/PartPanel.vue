@@ -4,7 +4,7 @@ import type { OrientationCandidate } from '../engine/autoOrient'
 import { QUARTER_TURNS, UP_AXES, type PartPlacement, type QuarterTurns, type UpAxis } from '../engine/partPlacement'
 import type { Box3D } from '../engine/stock'
 import type { StepPart } from '../engine/stepModel'
-import { parseDecimalInput } from '../ui/decimalInput'
+import { decimalInputProblem, parseDecimalInput } from '../ui/decimalInput'
 
 const props = defineProps<{
   part: StepPart
@@ -40,7 +40,7 @@ watch(
 function onCoord(field: CoordField) {
   const v = parseDecimalInput(texts.value[field])
   if (!Number.isFinite(v)) {
-    inputProblem.value = 'Enter a number in mm, for example 38.5.'
+    inputProblem.value = decimalInputProblem(texts.value[field]) ?? 'Enter a number in mm, for example 38.5.'
     return
   }
   inputProblem.value = null

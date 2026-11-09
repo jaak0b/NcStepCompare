@@ -29,14 +29,6 @@ const mm = (v: number) => `${v.toFixed(2)} mm`
 const range = (a: number, b: number) => `${a.toFixed(2)} to ${b.toFixed(2)} mm`
 const toolLabel = (n: number) => (n < 0 ? 'none' : `T${n}`)
 
-function duration(seconds: number): string {
-  const total = Math.round(seconds)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  return `${h} h ${m} min ${s} s`
-}
-
 function toolpathName(number: number, name: string): string {
   if (number === NO_TOOLPATH) return 'Moves outside any toolpath'
   return name
@@ -106,17 +98,6 @@ function toolpathName(number: number, name: string): string {
         <dd>{{ range(bounds.min.y, bounds.max.y) }}</dd>
         <dt>Z</dt>
         <dd>{{ range(bounds.min.z, bounds.max.z) }}</dd>
-      </dl>
-    </section>
-
-    <section v-if="header.studioTimeEstimateSeconds !== null">
-      <h2>Job time</h2>
-      <dl>
-        <dt>Makera Studio estimate (from file header)</dt>
-        <dd>
-          {{ duration(header.studioTimeEstimateSeconds) }}
-          ({{ header.studioTimeEstimateSeconds }} s)
-        </dd>
       </dl>
     </section>
 

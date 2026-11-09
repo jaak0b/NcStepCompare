@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { SimulationReady } from '../workers/simulationMessages'
-import { parseDecimalInput } from '../ui/decimalInput'
+import { decimalInputProblem, parseDecimalInput } from '../ui/decimalInput'
 import { SOURCE_LABEL } from '../ui/sourceLabel'
 
 const props = defineProps<{
@@ -30,7 +30,7 @@ watch(
 function onCellSize() {
   const v = parseDecimalInput(text.value)
   if (!(v > 0)) {
-    inputProblem.value = 'Enter a cell size above 0 mm, for example 0.05.'
+    inputProblem.value = decimalInputProblem(text.value) ?? 'Enter a cell size above 0 mm, for example 0.05.'
     return
   }
   inputProblem.value = null

@@ -2,17 +2,31 @@
 //
 // Each cutting move takes its length divided by its programmed feed; each rapid takes its length
 // divided by the rapid rate, which is not in the file and so is a user setting. Dwells (G4) add
-// their time. Acceleration and deceleration are ignored, so real machines take somewhat longer on
-// short moves.
+// their time; the unit of a P dwell is a user setting because controllers differ. Acceleration and
+// deceleration are ignored. Motion lines the parser could not store (unknown position) get no time.
 
 import type { Dwell } from './gcodeParser'
 import { MoveType, type MoveList } from './moveList'
 
 /**
- * Assumed rapid rate in mm/min. The Makera Z1 rapid rate is not published in the file; 3000 mm/min
- * is the maximum travel speed Makera states for its Carvera machines.
+ * Assumed rapid rate in mm/min. The file does not contain the machine's rapid rate, and no published
+ * Makera Z1 value was available, so this is a placeholder for the user to replace.
  */
 export const DEFAULT_RAPID_RATE_MM_PER_MIN = 3000
+
+export type DwellPUnit = 'seconds' | 'milliseconds'
+/** Assumed unit of a G4 P value: seconds, as in RS274/NGC and Grbl. */
+export const DEFAULT_DWELL_P_UNIT: DwellPUnit = 'seconds'
+
+export interface TimeSettings {
+  rapidRateMmPerMin: number
+  dwellPUnit: DwellPUnit
+}
+
+/** Dwell time in seconds. X and S dwells are always seconds; P follows the chosen unit. */
+export function dwellSeconds(d: Dwell, pUnit: DwellPUnit): number {
+  return d.word === 'P' && pUnit === 'milliseconds' ? d.value / 1000 : d.value
+}
 
 export interface TimeBreakdown {
   feedSeconds: number
@@ -58,8 +72,9 @@ const emptyBreakdown = (): TimeBreakdown => ({
 export function estimateMachiningTime(
   moves: MoveList,
   dwells: readonly Dwell[],
-  rapidRateMmPerMin: number,
+  settings: TimeSettings,
 ): TimeEstimate {
+  const { rapidRateMmPerMin, dwellPUnit } = settings
   const problem = rapidRateProblem(rapidRateMmPerMin)
   if (problem) throw new RangeError(problem)
 
@@ -85,7 +100,7 @@ export function estimateMachiningTime(
       else e.noFeedLengthMm += length
     }
   }
-  for (const d of dwells) entry(d.toolpath).dwellSeconds += d.seconds
+  for (const d of dwells) entry(d.toolpath).dwellSeconds += dwellSeconds(d, dwellPUnit)
 
   const total = emptyBreakdown()
   const toolpaths = [...byToolpath.values()].sort((a, b) => a.toolpath - b.toolpath)

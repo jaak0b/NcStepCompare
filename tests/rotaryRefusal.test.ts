@@ -24,6 +24,23 @@ describe('rotary axis refusal', () => {
     expect(job.refusal?.message).toContain('C word on line 3')
   })
 
+  it('refuses a rotary word on a moving line the tokeniser cannot read', () => {
+    const job = parseGcode(program('G0 X0 Y0 Z5', 'G1 X10 A90 *5'))
+
+    expect(job.refusal?.message).toContain('A word on line 2')
+  })
+
+  it('warns, without refusing, about rotary words on lines that do not move', () => {
+    const lines = ['G0 X0 Y0 Z5', 'G1 Z-1 F100', 'G92 A0', 'G4 P1 B2', 'M3 S1000 C0', 'T1 M6 A0', 'G1 X10']
+    const job = parseGcode(program(...lines))
+
+    expect(job.refusal).toBeNull()
+    expect(job.moves.count).toBe(2)
+    for (const line of [3, 4, 5, 6]) {
+      expect(job.warnings.some((w) => w.line === line && w.message.startsWith('Rotary axis word'))).toBe(true)
+    }
+  })
+
   it('loads a job with a cylinder stock header and no rotary words', () => {
     const job = parseGcode(
       program(

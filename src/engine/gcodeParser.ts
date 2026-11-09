@@ -5,8 +5,9 @@
 // ( ) and ; comments, Makera `;@MKR|` records. Anything else becomes a warning with the line number
 // and text; the rest of the job is still parsed.
 //
-// A rotary axis word (A, B or C) on a motion line refuses the whole job: the result carries a
-// refusal and no moves, because a 3-axis simulation of a 4- or 5-axis program would be wrong.
+// A rotary axis word (A, B or C) on a line that moves the machine refuses the whole job: the result
+// carries a refusal and no moves, because a 3-axis simulation of a 4- or 5-axis program would be
+// wrong. A rotary word on a line that does not move (G92, G4, M6 and the like) is a warning.
 //
 // The position before the first absolute move on an axis is unknown. Moves that start or end on
 // an unknown axis are not stored: a rapid there is normal (the machine positions itself), a feed
@@ -64,8 +65,12 @@ export interface ToolChange {
 export interface Dwell {
   /** 1-based line number. */
   line: number
-  /** P value read as seconds (the RS274/NGC and Grbl convention). */
-  seconds: number
+  /**
+   * The word that gave the time. X and S are seconds. The unit of P depends on the controller
+   * (seconds in RS274/NGC and Grbl, milliseconds in Fanuc and Smoothieware), so it is left to the caller.
+   */
+  word: 'P' | 'X' | 'S'
+  value: number
   /** Toolpath the dwell belongs to (the toolpath marker in force), or NO_TOOLPATH. */
   toolpath: number
 }
@@ -86,6 +91,12 @@ export interface ParsedJob {
   moves: MoveList
   toolChanges: ToolChange[]
   dwells: Dwell[]
+  /**
+   * Lines that move the machine but add nothing to the move list: a start or end position that is
+   * not known (before the first absolute move, after G28 or G53), an unsupported motion mode, or an
+   * arc that cannot be drawn.
+   */
+  unstoredMotionLines: number
   warnings: ParseWarning[]
   /** Set when the job is refused; moves, tool changes and warnings are then empty. */
   refusal: ParseRefusal | null
@@ -134,6 +145,13 @@ const enum Plane {
 
 const LETTER_INDEX = (ch: string) => ch.charCodeAt(0) - CH_A
 
+/** First rotary axis word (A, B or C with a number) outside comments, for lines the tokeniser rejected. */
+function rotaryWordInRawLine(text: string): string {
+  const code = text.replace(/\([^)]*\)/g, ' ').replace(/;.*/, '')
+  const m = /([ABC])\s*[-+]?[\d.]/i.exec(code)
+  return m ? m[1].toUpperCase() : ''
+}
+
 export function parseGcode(source: string, options: ParseOptions = {}): ParsedJob {
   const chordTolerance = options.chordToleranceMm ?? DEFAULT_CHORD_TOLERANCE_MM
   assertValidChordTolerance(chordTolerance)
@@ -142,6 +160,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
   const warnings: ParseWarning[] = []
   const toolChanges: ToolChange[] = []
   const dwells: Dwell[] = []
+  let unstoredMotionLines = 0
   const moves = new MoveListBuilder(Math.max(1024, Math.ceil(source.length / 20)))
 
   // Modal state.
@@ -173,6 +192,26 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
 
   const lineText = () => source.slice(lineStart, lineEnd)
   const warn = (message: string) => warnings.push({ line: lineNo, text: lineText(), message })
+  const refuse = (rotaryWord: string): ParsedJob => ({
+    header,
+    hasMakeraHeader,
+    moves: new MoveListBuilder(1).finish(),
+    toolChanges: [],
+    dwells: [],
+    unstoredMotionLines: 0,
+    warnings: [],
+    refusal: {
+      line: lineNo,
+      text: lineText(),
+      message:
+        `This file uses a rotary axis (${rotaryWord} word on line ${lineNo}). ` +
+        'NcStepCompare simulates 3-axis milling only, so the job is not loaded.',
+    },
+    lineCount: lineNo,
+    chordToleranceMm: chordTolerance,
+  })
+  const rotaryWarning = (rotaryWord: string) =>
+    warn(`Rotary axis word ${rotaryWord} ignored: this line does not move the machine, and only 3-axis milling is simulated.`)
 
   const attrs: MoveAttributes = {
     type: MoveType.Rapid,
@@ -303,7 +342,11 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       words++
     }
     if (lineError) {
+      // A rotary word must not slip through on a line the tokeniser gave up on.
+      const rotary = rotaryWordInRawLine(lineText())
+      if (rotary && (motion !== Motion.None || /G0*[0-3](?![\d.])/i.test(lineText()))) return refuse(rotary)
       warn(`${lineError} Line skipped.`)
+      if (rotary) rotaryWarning(rotary)
       continue
     }
     if (words === 0) continue
@@ -326,6 +369,8 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     let skipReason = ''
     let duplicate = ''
     let rotaryWord = ''
+    let nonMoving = false
+    let otherCommand = false
     let newPlane: Plane = plane
     let newUnitScale = unitScale
     let newIncremental: boolean = incremental
@@ -343,7 +388,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
             case 10: gMotion = Motion.Linear; break
             case 20: gMotion = Motion.ArcCW; break
             case 30: gMotion = Motion.ArcCCW; break
-            case 40: dwell = true; break // no motion
+            case 40: dwell = true; nonMoving = true; break
             case 170: newPlane = Plane.XY; break
             case 180: newPlane = Plane.XZ; break
             case 190: newPlane = Plane.YZ; break
@@ -361,7 +406,12 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
               gMotion = Motion.Unsupported
               unsupportedMotionCode = `G${v}`
               break
+            case 100: case 920: case 921: case 922: case 923:
+              nonMoving = true // offsets and coordinate settings: axis words here do not move
+              ignored.push(`G${v}`)
+              break
             case 280:
+              nonMoving = true
               skipMotion = true
               homing = true
               skipReason = 'G28 (return to machine home) is not drawn: the home position is not known in work coordinates.'
@@ -376,6 +426,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
           break
         }
         case LETTER_INDEX('M'): {
+          otherCommand = true
           switch (v) {
             case 3: spindleWord = SpindleState.Clockwise; break
             case 4: spindleWord = SpindleState.CounterClockwise; break
@@ -398,8 +449,8 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
           if (!rotaryWord) rotaryWord = String.fromCharCode(CH_A + letter)
           break
         case LETTER_INDEX('F'): fWord = v; break
-        case LETTER_INDEX('S'): sWord = v; break
-        case LETTER_INDEX('T'): tWord = v; break
+        case LETTER_INDEX('S'): sWord = v; otherCommand = true; break
+        case LETTER_INDEX('T'): tWord = v; otherCommand = true; break
         case LETTER_INDEX('P'): pWord = v; break
         case LETTER_INDEX('N'): case LETTER_INDEX('H'): case LETTER_INDEX('D'):
           break // line number, offset numbers
@@ -411,24 +462,23 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       }
     }
 
-    if (rotaryWord && (gMotion !== Motion.None || (motion !== Motion.None && !cancelMotion))) {
-      return {
-        header,
-        hasMakeraHeader,
-        moves: new MoveListBuilder(1).finish(),
-        toolChanges: [],
-        dwells: [],
-        warnings: [],
-        refusal: {
-          line: lineNo,
-          text: lineText(),
-          message:
-            `This file uses a rotary axis (${rotaryWord} word on line ${lineNo}). ` +
-            'NcStepCompare simulates 3-axis milling only, so the job is not loaded.',
-        },
-        lineCount: lineNo,
-        chordToleranceMm: chordTolerance,
-      }
+    // In a dwell block X and S give the dwell time; they are not a move or a spindle speed.
+    let dwellWord: Dwell['word'] | null = null
+    let dwellValue = NaN
+    if (dwell) {
+      if (!Number.isNaN(pWord)) [dwellWord, dwellValue] = ['P', pWord]
+      else if (hasX) [dwellWord, dwellValue] = ['X', vx]
+      else if (!Number.isNaN(sWord)) [dwellWord, dwellValue] = ['S', sWord]
+      hasX = false
+      sWord = NaN
+    }
+
+    if (rotaryWord) {
+      // A line moves when it has a motion word, or continues the modal motion with axis words
+      // (a bare rotary word counts, a rotary word next to M, S or T commands does not).
+      const modalMove = motion !== Motion.None && !cancelMotion && (hasX || hasY || hasZ || !otherCommand)
+      if (!nonMoving && (gMotion !== Motion.None || modalMove)) return refuse(rotaryWord)
+      rotaryWarning(rotaryWord)
     }
     if (duplicate) {
       warn(`Word ${duplicate} appears twice. Line skipped.`)
@@ -453,8 +503,8 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     }
     if (spindleWord >= 0) spindle = spindleWord as SpindleStateValue
     if (dwell) {
-      if (Number.isNaN(pWord) || pWord < 0) warn('Dwell (G4) without a valid P time. It is not counted in the job time.')
-      else dwells.push({ line: lineNo, seconds: pWord, toolpath })
+      if (dwellWord === null || !(dwellValue >= 0)) warn('Dwell (G4) without a valid P, X or S time. It is not counted in the job time.')
+      else dwells.push({ line: lineNo, word: dwellWord, value: dwellValue, toolpath })
     }
     if (gMotion !== Motion.None) motion = gMotion
     if (cancelMotion) motion = Motion.None
@@ -463,6 +513,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     const hasAxis = hasX || hasY || hasZ
     if (skipMotion) {
       warn(skipReason)
+      if (homing || hasAxis) unstoredMotionLines++
       // Where the named axes end up is not known in work coordinates. A bare G28 homes every axis.
       const all = homing && !hasAxis
       if (all || hasX) x = NaN
@@ -478,6 +529,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       }
       // The machine moves in a way this parser does not model.
       if (hasAxis) {
+        unstoredMotionLines++
         x = NaN
         y = NaN
         z = NaN
@@ -505,6 +557,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
 
     if (motion === Motion.Rapid || motion === Motion.Linear) {
       if (!known) {
+        unstoredMotionLines++
         if (motion === Motion.Linear) {
           warn('Feed move starts from an unknown position and is not drawn. Move every axis with an absolute move first.')
         }
@@ -517,11 +570,13 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
 
     // Arc.
     if (!known) {
+      unstoredMotionLines++
       warn('Arc starts from an unknown position and is not drawn. Move every axis with an absolute move first.')
       continue
     }
     if (plane !== Plane.XY) {
       warn('Arcs are only supported in the XY plane (G17). This arc is not drawn.')
+      unstoredMotionLines++
       continue
     }
     const clockwise = motion === Motion.ArcCW
@@ -546,12 +601,14 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
       const centre = arcCentreFromRadius(sx, sy, ex, ey, vr * unitScale, clockwise)
       if (!centre) {
         warn('Arc radius R cannot connect the start and end point. This arc is not drawn.')
+        unstoredMotionLines++
         continue
       }
       cx = centre.cx
       cy = centre.cy
     } else {
       warn('Arc has no centre (I/J) or radius (R). This arc is not drawn.')
+      unstoredMotionLines++
       continue
     }
     setAttrs(MoveType.Arc)
@@ -572,6 +629,7 @@ export function parseGcode(source: string, options: ParseOptions = {}): ParsedJo
     moves: moves.finish(),
     toolChanges,
     dwells,
+    unstoredMotionLines,
     warnings,
     refusal: null,
     lineCount: lineNo,

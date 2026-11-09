@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { toleranceBelowCellSize, type DeviationSummary, type Tolerances } from '../engine/deviation'
-import { parseDecimalInput } from '../ui/decimalInput'
+import { decimalInputProblem, parseDecimalInput } from '../ui/decimalInput'
 import { SOURCE_LABEL, type SettingSource } from '../ui/sourceLabel'
 import { DEVIATION_COLORS } from '../viewer/stockSurface'
 
@@ -39,7 +39,7 @@ watch(
 function onTolerance(which: keyof Tolerances) {
   const v = parseDecimalInput(texts.value[which])
   if (!(v > 0)) {
-    inputProblem.value = 'Enter a tolerance above 0 mm, for example 0.05.'
+    inputProblem.value = decimalInputProblem(texts.value[which]) ?? 'Enter a tolerance above 0 mm, for example 0.05.'
     return
   }
   inputProblem.value = null
