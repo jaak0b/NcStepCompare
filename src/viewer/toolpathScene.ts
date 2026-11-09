@@ -75,7 +75,7 @@ export class ToolpathScene {
   private stockSurface: StockSurface | null = null
   private stockGaps: StockGaps | null = null
   private undercuts: UndercutMesh | null = null
-  /** Section plane cutting everything drawn in work space (stock, outline, toolpaths, markers), or none. */
+  /** Section plane cutting the drawn stock faces, or none. */
   private clipPlanes: THREE.Plane[] = []
   private grid: GridInfo | null = null
   private missing: THREE.Mesh | null = null
@@ -176,9 +176,7 @@ export class ToolpathScene {
         new THREE.Vector3(stockBox.min.x, stockBox.min.y, stockBox.min.z),
         new THREE.Vector3(stockBox.max.x, stockBox.max.y, stockBox.max.z),
       )
-      const stockOutline = new THREE.Box3Helper(box, STOCK_COLOR)
-      this.clipMaterial(stockOutline.material as THREE.Material)
-      this.jobGroup.add(stockOutline)
+      this.jobGroup.add(new THREE.Box3Helper(box, STOCK_COLOR))
     }
     this.applyVisibility()
 
@@ -222,9 +220,8 @@ export class ToolpathScene {
   }
 
   /**
-   * Cuts the drawing with the plane `axis` = `position` (work coordinates), keeping the side with the
-   * larger coordinate; null removes the plane. Stock, STEP outline, toolpaths, missing material and the
-   * finding box are all cut. Only the drawing is cut, never the material data.
+   * Cuts the drawn stock with a section plane across `axis` at `position` (work coordinates), keeping
+   * the side above it; null removes the plane. Only the drawing is cut, never the material data.
    */
   setSectionPlane(section: { axis: 'x' | 'y'; position: number } | null): void {
     this.clipPlanes = section
@@ -236,21 +233,10 @@ export class ToolpathScene {
 
   private applyClipPlanes(): void {
     this.stockSurface?.setClipPlanes(this.clipPlanes)
-    if (this.undercuts) this.clipMaterial(this.undercuts.material)
-    for (const m of [this.cuttingMaterial, this.rapidMaterial, this.outlineMaterial, this.outlineFaceMaterial]) {
-      this.clipMaterial(m)
+    if (this.undercuts) {
+      this.undercuts.material.clippingPlanes = this.clipPlanes
+      this.undercuts.material.needsUpdate = true
     }
-    if (this.missing) this.clipMaterial(this.missing.material as THREE.Material)
-    if (this.findingBox) this.clipMaterial(this.findingBox.material as THREE.Material)
-    for (const child of this.jobGroup.children) {
-      if (child instanceof THREE.Box3Helper) this.clipMaterial(child.material as THREE.Material)
-    }
-  }
-
-  /** Gives a material the current section plane; a change of plane count needs a new shader. */
-  private clipMaterial(m: THREE.Material): void {
-    m.clippingPlanes = this.clipPlanes
-    m.needsUpdate = true
   }
 
   /** Colours the stock by the comparison limits and cell classes (see StockSurface.setLimits), or plain for null. */
@@ -266,7 +252,6 @@ export class ToolpathScene {
     if (m && this.grid) {
       this.missing = missingMaterialMesh(this.grid, m)
       if (this.missing) {
-        this.clipMaterial(this.missing.material as THREE.Material)
         this.missing.visible = this.missingVisible
         this.scene.add(this.missing)
       }
@@ -333,7 +318,6 @@ export class ToolpathScene {
       this.findingBox = new THREE.Box3Helper(b, FINDING_COLOR)
       // Drawn through the parts and the stock: a gouge lies below the model surface.
       ;(this.findingBox.material as THREE.LineBasicMaterial).depthTest = false
-      this.clipMaterial(this.findingBox.material as THREE.Material)
       this.outlineScene.add(this.findingBox)
       const sphere = b.getBoundingSphere(new THREE.Sphere())
       const radius = Math.max(sphere.radius, MIN_FINDING_VIEW_RADIUS_MM)
