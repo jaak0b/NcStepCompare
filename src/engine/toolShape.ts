@@ -70,10 +70,14 @@ export interface CutterProfile {
   bands: ProfileBand[]
   /** True when the profile is one open classic band, the height grid's own cutter model. */
   classic: boolean
+  /** Height of the top of the cutting part above the tip (Infinity for a classic cutter). */
+  cuttingHeight: number
+  /** Radius of the non-cutting neck above the cutting part (0 for a classic cutter). */
+  neckRadius: number
 }
 
 function classic(form: ProfileFormValue, radius: number, cornerRadius: number, coneSlope: number): CutterProfile {
-  return { form, radius, cornerRadius, coneSlope, bands: [{ lower: null, upper: [], rMax: radius }], classic: true }
+  return { form, radius, cornerRadius, coneSlope, bands: [{ lower: null, upper: [], rMax: radius }], classic: true, cuttingHeight: Infinity, neckRadius: 0 }
 }
 
 /** Fundamental triangle height of a thread form: H = P / (2 tan(angle / 2)); ISO 68-1: 0.866 P. */
@@ -116,7 +120,8 @@ function threadMillProfile(shape: CutterShape, radius: number): CutterProfile | 
       rMax: radius,
     })
   }
-  return { form: ProfileForm.Flat, radius, cornerRadius: 0, coneSlope: 0, bands, classic: false }
+  const cuttingHeight = offset + (teeth - 1) * pitch + half
+  return { form: ProfileForm.Flat, radius, cornerRadius: 0, coneSlope: 0, bands, classic: false, cuttingHeight, neckRadius }
 }
 
 /** Returns the profile, or an error message when the shape's values cannot describe a cutter. */

@@ -19,6 +19,7 @@
 // merged into one finding.
 import { MoveType, SpindleState, type MoveList } from '../moveList'
 import type { ToolSetup } from '../toolTable'
+import { cutterProfile, type CutterShape } from '../toolShape'
 import { lineRange, mm, position, type Finding, type FindingKind, type FindingRow } from './finding'
 
 export type FindingMoves = Pick<MoveList, 'count' | 'start' | 'end' | 'type' | 'feed' | 'spindle' | 'tool' | 'toolpath' | 'line'>
@@ -27,7 +28,20 @@ export type FindingMoves = Pick<MoveList, 'count' | 'start' | 'end' | 'type' | '
 export type FindingTool = Pick<
   ToolSetup,
   'number' | 'name' | 'kind' | 'diameter' | 'fluteLength' | 'widthOfCutLimit' | 'depthOfCutLimit' | 'sources'
->
+> &
+  Partial<Pick<CutterShape, 'pitch' | 'profileAngle' | 'teeth' | 'toothTipFlat' | 'neckDiameter' | 'toothOffset'>>
+
+/**
+ * Height above the tip where non-cutting contact starts: the flute length, or for a cutter with a
+ * tooth profile (thread mill with a pitch) the top of its teeth, since its neck does not cut.
+ */
+function contactLimit(t: FindingTool): { height: number; label: string; basis: FindingRow['basis'] } {
+  if (t.kind === 'thread mill' && t.pitch !== undefined && !Number.isNaN(t.pitch)) {
+    const p = cutterProfile({ ...t, cornerRadius: 0, tipAngle: 0 })
+    if (typeof p !== 'string' && !p.classic) return { height: p.cuttingHeight, label: 'Top of the teeth above the tip', basis: 'calculated' }
+  }
+  return { height: t.fluteLength, label: 'Flute length', basis: t.sources.fluteLength }
+}
 
 /** Per-move values from the simulation (see MaterialSimulation). */
 export interface MoveMeasurements {
@@ -157,14 +171,16 @@ export function moveFindings(moves: FindingMoves, m: MoveMeasurements, tools: Fi
 
   const tooHigh = (i: number) => {
     const t = toolOf.get(moves.tool[i])
-    return !!t && t.fluteLength > 0 && m.contactHeight[i] > t.fluteLength
+    if (!t) return false
+    const limit = contactLimit(t).height
+    return limit > 0 && m.contactHeight[i] > limit
   }
   for (const r of runs(moves, tooHigh)) {
     const t = toolOf.get(moves.tool[r.first])!
     out.push(
       make('contact', r, [
         { label: 'Highest stock in contact above the tool tip', value: mm(maxOver(m.contactHeight, r)), basis: 'measured' },
-        { label: 'Flute length', value: mm(t.fluteLength), basis: t.sources.fluteLength },
+        { label: contactLimit(t).label, value: mm(contactLimit(t).height), basis: contactLimit(t).basis },
       ]),
     )
   }

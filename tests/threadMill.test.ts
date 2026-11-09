@@ -135,6 +135,19 @@ describe('contact height of a thread mill plunge', () => {
   })
 })
 
+describe('neck contact of a thread mill', () => {
+  // Feeding sideways at tip Z -1 through untouched stock (top Z 0): the tooth cuts Z -1 to -0.625,
+  // the stock above it stands inside the neck radius and touches the neck up to 1 mm above the tip.
+  it('measures the material standing against the neck', () => {
+    const job = parseGcode('T2 M6\nG0 X2 Y2 Z5\nG0 Z-1\nG1 X4 F100\n')
+    const sim = new MaterialSimulation(stock, 0.05, job.moves, new Map([[2, profile(threadMill)]]), [])
+
+    sim.advanceTo(job.moves.count)
+
+    expect(sim.contactHeight[job.moves.count - 1]).toBeCloseTo(1, 5)
+  })
+})
+
 describe('thread mill entry in the tool table', () => {
   // T6 of the backplate fixture header: 2.42 mm cutting diameter.
   const header = ';@MKR|TOOL|number=6|id=152111243809|name=3.175*M3*9mm Thread|type=Thread|handlediameter=3.175|sticklength=0|shoulderlength=9|flutelength=10|diameter=2.42|tipdiameter=0|cornerradius=0|angle=0|halfAngle=0\nT6 M6\n'

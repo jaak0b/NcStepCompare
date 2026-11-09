@@ -167,11 +167,12 @@ export function sweepMove(
       if (bandTool) {
         if (bandFloor >= h[row + i]) continue
         const removed = bandCut(dex!, h, row + i, wx, wy, w2, z0, dx, dy, dz, a, tool, bottom)
+        // Neck contact counts on columns the teeth did not change too.
+        if (bandContact > out.contactHeight) out.contactHeight = bandContact
         if (removed < 0) continue
         if (removed > 0) {
           volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
-          if (bandContact > out.contactHeight) out.contactHeight = bandContact
         }
         if (lastCut) lastCut[row + i] = moveIndex
         if (i < out.minI) out.minI = i
@@ -287,7 +288,8 @@ export function sweepMove(
 
 /**
  * Contact height of the last `bandCut`: per band, the highest material it removed above the tool tip
- * at the point of the move where that band reached lowest; the largest over the bands, 0 for none.
+ * at the point of the move where that band reached lowest, and the highest material touching the
+ * neck; the largest of these, 0 for none.
  */
 let bandContact = 0
 
@@ -356,6 +358,12 @@ function bandCut(
       const contact = dex.lastHighestRemoved - (z0 + tLow * dz)
       if (contact > bandContact) bandContact = contact
     }
+  }
+  // The neck does not cut: material standing inside its radius above the top of the teeth touches
+  // it. Measured from the lowest tip Z of the move, after the teeth have cut this column.
+  if (dMin <= tool.neckRadius && heights[c] > bottom) {
+    const neckBottom = zMin + tool.cuttingHeight
+    if (heights[c] > neckBottom && heights[c] - zMin > bandContact) bandContact = heights[c] - zMin
   }
   return total
 }
