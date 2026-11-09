@@ -3,8 +3,9 @@
 // Checkpoints are incremental: each stores the grid inside the rectangle of cells changed since the
 // previous checkpoint (cells outside it did not change in that span). Applying the chain from the
 // first checkpoint up to the nearest one at or before the target rebuilds the grid exactly; the
-// simulation then runs forward to the target.
-import { createHeightGrid, type HeightGrid } from './heightGrid'
+// simulation then runs forward to the target. The rectangle also records the gaps of the dexel
+// columns inside it, so undercuts come back with the heights.
+import { createDexelStock, type DexelStock, type GapRecord } from './dexelStock'
 import type { MoveList } from './moveList'
 import type { Box3D } from './stock'
 import { emptyMoveRemoval, sweepMove } from './sweep'
@@ -22,6 +23,7 @@ interface Checkpoint {
   minJ: number
   maxJ: number
   data: Float32Array
+  gaps: GapRecord
 }
 
 /** Move indices at which to store a checkpoint: every toolpath start and every `interval` moves. */
@@ -55,7 +57,7 @@ function extend(r: CellRect, o: CellRect): void {
 }
 
 export class MaterialSimulation {
-  readonly grid: HeightGrid
+  readonly grid: DexelStock
   /** Per move: stock volume removed (mm^3), filled on the first pass through each move. */
   readonly removedVolume: Float32Array
   /** Per move: largest thickness of stock removed in one cell (mm), the depth of cut. */
@@ -95,7 +97,7 @@ export class MaterialSimulation {
     private readonly tools: Map<number, CutterProfile>,
     checkpointMoves: number[],
   ) {
-    this.grid = createHeightGrid(stock, cellSize)
+    this.grid = createDexelStock(stock, cellSize)
     this.dirtyMinI = this.grid.nx
     this.dirtyMinJ = this.grid.ny
     this.removedVolume = new Float32Array(moves.count)
@@ -166,7 +168,7 @@ export class MaterialSimulation {
 
   /** Memory held by checkpoints, in bytes. */
   checkpointBytes(): number {
-    return this.checkpoints.reduce((sum, c) => sum + c.data.byteLength, 0)
+    return this.checkpoints.reduce((sum, c) => sum + c.data.byteLength + c.gaps.columns.byteLength + c.gaps.counts.byteLength + c.gaps.pairs.byteLength, 0)
   }
 
   get checkpointCount(): number {
@@ -195,6 +197,7 @@ export class MaterialSimulation {
       minJ: this.dirtyMinJ,
       maxJ: this.dirtyMaxJ,
       data,
+      gaps: this.grid.dexels.record(this.dirtyMinI, this.dirtyMaxI, this.dirtyMinJ, this.dirtyMaxJ),
     })
     this.resetDirty()
   }
@@ -211,6 +214,7 @@ export class MaterialSimulation {
     // Only cells inside everDirty can differ from the stock top.
     const e = this.everDirty
     for (let j = e.minJ; j <= e.maxJ; j++) g.heights.fill(g.top, j * g.nx + e.minI, j * g.nx + e.maxI + 1)
+    g.dexels.clear()
     extend(this.displayDirty, e)
     this.current = 0
     for (const c of this.checkpoints) {
@@ -220,6 +224,8 @@ export class MaterialSimulation {
       for (let j = 0; j < hgt; j++) {
         g.heights.set(c.data.subarray(j * w, (j + 1) * w), (c.minJ + j) * g.nx + c.minI)
       }
+      if (w > 0 && hgt > 0) g.dexels.clearRect(c.minI, c.maxI, c.minJ, c.maxJ)
+      g.dexels.apply(c.gaps)
       this.current = c.moveIndex
     }
     this.resetDirty()

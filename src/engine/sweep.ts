@@ -26,11 +26,22 @@
 //    R (1 - cos phi) with phi the engagement angle; a full slot gives the diameter. Not defined for a
 //    move without XY travel.
 //  - Contact height: the largest height of stock material above the tool tip that the cutter
-//    touches, taking the tip at the point of the move where the cell is cut lowest. The cutter is
-//    modelled as reaching up indefinitely, so material above the flute length is still removed and
-//    shows up here.
+//    touches, taking the tip at the point of the move where the cell is cut lowest. A classic
+//    cutter is modelled as reaching up indefinitely, so material above the flute length is still
+//    removed and shows up here.
+//
+// Cutters with bounded bands (a thread mill with its teeth) remove material on the dexel stock.
+// Per column and band the tool occupies [z(t) + a(d(t)), z(t) + b(d(t))] while d(t) <= the band's
+// radius; over the connected t range of the move this sweeps the single interval
+// [min_t (z + a(d(t))), max_t (z + b(d(t)))], which is subtracted from the column. Band boundaries
+// are straight lines in (r, h), so the extremes are found in closed form: on each line element
+// z(t) + s d(t) has at most one stationary point (one quadratic), so the extreme lies at that
+// point, at a t where d(t) crosses an element end, at the closest approach, or at the ends of the
+// t range. Z is exact to float32; XY is sampled at the column centres. A column that already holds
+// gaps is cut through the dexel stock by classic cutters too, so the gaps stay consistent.
+import type { DexelGaps } from './dexelStock'
 import type { HeightGrid } from './heightGrid'
-import { ProfileForm, profileHeight, type CutterProfile } from './toolShape'
+import { boundaryHeight, ProfileForm, profileHeight, type CutterProfile, type ProfilePoint } from './toolShape'
 
 const GOLDEN_SECTION_ITERATIONS = 40
 const INV_PHI = (Math.sqrt(5) - 1) / 2
@@ -99,7 +110,11 @@ export function sweepMove(
   const lastI = nx - 1
   const lastJ = grid.ny - 1
   let volume = 0
-  if (record && len > 0) out.widthOfCut = contactArcWidth(grid, x0, y0, z0, dx, dy, dz, len, tool)
+  const dex = (grid as HeightGrid & { dexels?: DexelGaps }).dexels ?? null
+  const bandTool = !tool.classic
+  if (bandTool && dex === null) throw new Error('A cutter with a tooth profile needs the dexel stock.')
+  const anyGaps = dex !== null && dex.gapColumnCount > 0
+  if (record && len > 0 && !bandTool) out.widthOfCut = contactArcWidth(grid, x0, y0, z0, dx, dy, dz, len, tool)
   const lastCut = record ? record.lastCut : null
   const moveIndex = record ? record.moveIndex : 0
 
@@ -143,6 +158,22 @@ export function sweepMove(
       const cx = ox + (i + 0.5) * cs
       const wx = cx - x0
       const w2 = wx * wx + wy * wy
+      if (bandTool) {
+        const removed = bandCut(dex!, row + i, wx, wy, w2, z0, dx, dy, dz, a, tool, h[row + i], bottom)
+        if (removed < 0) continue
+        if (removed > 0) {
+          volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
+          if (removed > out.maxCutDepth) out.maxCutDepth = removed
+          const contact = dex!.lastHighestRemoved - bandTipZ
+          if (contact > out.contactHeight) out.contactHeight = contact
+        }
+        if (lastCut) lastCut[row + i] = moveIndex
+        if (i < out.minI) out.minI = i
+        if (i > out.maxI) out.maxI = i
+        if (j < out.minJ) out.minJ = j
+        if (j > out.maxJ) out.maxJ = j
+        continue
+      }
       const old = h[row + i]
       let zmin: number
       // Tool tip Z at the point of the move where this cell is cut lowest.
@@ -222,9 +253,14 @@ export function sweepMove(
       // Compare in the grid's float32 precision, so a repeated pass at the same depth removes nothing.
       const z = Math.fround(zmin)
       if (z < old) {
-        h[row + i] = z
-        // Removed stock material is the part of [new, old] above the stock bottom.
-        const removed = (old > bottom ? old : bottom) - (z > bottom ? z : bottom)
+        let removed: number
+        if (anyGaps && dex!.gapCount(row + i) > 0) {
+          removed = dex!.subtract(row + i, z, Infinity)
+        } else {
+          h[row + i] = z
+          // Removed stock material is the part of [new, old] above the stock bottom.
+          removed = (old > bottom ? old : bottom) - (z > bottom ? z : bottom)
+        }
         if (removed > 0) {
           volume += removed * (i === lastI ? grid.lastColumnWidth : cs) * cellH
           if (removed > out.maxCutDepth) out.maxCutDepth = removed
@@ -241,6 +277,131 @@ export function sweepMove(
   }
   out.removedVolume = volume
   return out
+}
+
+/** Tool tip Z at the point of the move where the last `bandCut` reached lowest. */
+let bandTipZ = 0
+
+/**
+ * Cuts one column with every band of the tool (see the header). Returns the thickness of material
+ * removed, or -1 when the column did not change.
+ */
+function bandCut(
+  dex: DexelGaps,
+  c: number,
+  wx: number,
+  wy: number,
+  w2: number,
+  z0: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  a: number,
+  tool: CutterProfile,
+  top: number,
+  bottom: number,
+): number {
+  let total = -1
+  let lowest = Infinity
+  const b = wx * dx + wy * dy
+  // Closest distance from the column to the tool axis over the move.
+  let tc = a > 0 ? b / a : 0
+  if (tc < 0) tc = 0
+  else if (tc > 1) tc = 1
+  const dMin = Math.sqrt(Math.max(0, (wx - tc * dx) * (wx - tc * dx) + (wy - tc * dy) * (wy - tc * dy)))
+  const zMin = dz < 0 ? z0 + dz : z0
+  const zMax = dz < 0 ? z0 : z0 + dz
+  for (const band of tool.bands) {
+    const rM = band.rMax
+    if (dMin > rM) continue
+    // a is non-decreasing and b non-increasing in d, so the band stays inside these bounds.
+    const lowBound = zMin + boundaryHeight(band.lower!, dMin)
+    const highBound = band.upper.length > 0 ? zMax + boundaryHeight(band.upper, dMin) : Infinity
+    if (Math.fround(lowBound) >= top || Math.fround(highBound) <= bottom) continue
+    if (dex.insideGap(c, lowBound, highBound)) continue
+    let zLow: number
+    let zHigh: number
+    let tLow: number
+    if (a === 0) {
+      zLow = lowBound
+      zHigh = highBound
+      tLow = dz < 0 ? 1 : 0
+    } else {
+      const disc = b * b - a * (w2 - rM * rM)
+      if (disc < 0) continue
+      const sq = Math.sqrt(disc)
+      const ta = Math.max(0, (b - sq) / a)
+      const tb = Math.min(1, (b + sq) / a)
+      if (ta > tb) continue
+      zLow = boundaryExtreme(band.lower!, 1, z0, dz, a, b, w2, ta, tb)
+      tLow = extremeT
+      zHigh = band.upper.length > 0 ? boundaryExtreme(band.upper, -1, z0, dz, a, b, w2, ta, tb) : Infinity
+    }
+    const r = dex.subtract(c, zLow, zHigh)
+    if (r < 0) continue
+    total = total < 0 ? r : total + r
+    if (zLow < lowest) {
+      lowest = zLow
+      bandTipZ = z0 + tLow * dz
+    }
+  }
+  return total
+}
+
+/** t of the extreme found by the last `boundaryExtreme`. */
+let extremeT = 0
+let extremeBest = 0
+
+/** Candidate t for `boundaryExtreme`: keeps the smallest sign * g(t) on [ta, tb]. */
+function considerT(points: ProfilePoint[], sign: number, z0: number, dz: number, a: number, b: number, w2: number, ta: number, tb: number, t: number): void {
+  if (!(t >= ta && t <= tb)) return
+  const d = Math.sqrt(Math.max(0, a * t * t - 2 * b * t + w2))
+  const v = sign * (z0 + dz * t + boundaryHeight(points, d))
+  if (v < extremeBest) {
+    extremeBest = v
+    extremeT = t
+  }
+}
+
+/**
+ * Smallest (sign 1) or largest (sign -1) value of z0 + dz t + f(d(t)) over t in [ta, tb], where
+ * d(t)^2 = a t^2 - 2 b t + w2 and f is the band boundary through `points`.
+ */
+function boundaryExtreme(
+  points: ProfilePoint[],
+  sign: number,
+  z0: number,
+  dz: number,
+  a: number,
+  b: number,
+  w2: number,
+  ta: number,
+  tb: number,
+): number {
+  const tc = b / a
+  const e2 = Math.max(0, w2 - (b * b) / a)
+  extremeBest = Infinity
+  extremeT = ta
+  considerT(points, sign, z0, dz, a, b, w2, ta, tb, ta)
+  considerT(points, sign, z0, dz, a, b, w2, ta, tb, tb)
+  considerT(points, sign, z0, dz, a, b, w2, ta, tb, tc)
+  for (let k = 0; k < points.length; k++) {
+    const q = (points[k].r * points[k].r - e2) / a
+    if (q >= 0) {
+      const u = Math.sqrt(q)
+      considerT(points, sign, z0, dz, a, b, w2, ta, tb, tc - u)
+      considerT(points, sign, z0, dz, a, b, w2, ta, tb, tc + u)
+    }
+    if (k === 0) continue
+    const s = (points[k].h - points[k - 1].h) / (points[k].r - points[k - 1].r)
+    // Stationary point of dz t + s d(t): s a u = -dz d(t), u = t - tc.
+    const den = a * (s * s * a - dz * dz)
+    if (s !== 0 && den > 0) {
+      const u = Math.sqrt((dz * dz * e2) / den)
+      considerT(points, sign, z0, dz, a, b, w2, ta, tb, dz * s > 0 ? tc - u : tc + u)
+    }
+  }
+  return sign * extremeBest
 }
 
 /**

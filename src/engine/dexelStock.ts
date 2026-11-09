@@ -84,6 +84,22 @@ export class DexelGaps {
     return this.pool.subarray(t.offset[l], t.offset[l] + t.count[l] * 2)
   }
 
+  /** True when [s, e] lies inside one gap of column c (in float32), so cutting it removes nothing. */
+  insideGap(c: number, s: number, e: number): boolean {
+    if (this.gapColumnCount === 0) return false
+    const t = this.tileOf(c)
+    if (t === null) return false
+    const l = this.local(c)
+    const n = t.count[l]
+    const off = t.offset[l]
+    s = Math.fround(s)
+    e = Math.fround(e)
+    for (let k = 0; k < n; k++) {
+      if (this.pool[off + 2 * k] <= s && this.pool[off + 2 * k + 1] >= e) return true
+    }
+    return false
+  }
+
   /**
    * Removes the tool interval [s, e] (e may be Infinity) from column c. Values are taken in the
    * stock's float32 precision. Returns the thickness of material removed; the top lowers to s when
