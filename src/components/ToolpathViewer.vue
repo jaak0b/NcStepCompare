@@ -121,8 +121,8 @@ watch(
       <label><input v-model="sectionOn" type="checkbox" /> Section view</label>
       <template v-if="sectionOn">
         <select v-model="sectionAxis">
-          <option value="x">across X</option>
-          <option value="y">across Y</option>
+          <option value="x">YZ plane, cut at an X position</option>
+          <option value="y">XZ plane, cut at a Y position</option>
         </select>
         <input
           v-model.number="sectionPosition"
@@ -131,7 +131,11 @@ watch(
           :max="sectionRange().max"
           step="0.05"
         />
-        <span>{{ sectionAxis.toUpperCase() }} {{ sectionPosition.toFixed(2) }} mm</span>
+        <span>
+          Cut at {{ sectionAxis.toUpperCase() }} = {{ sectionPosition.toFixed(2) }} mm
+          ({{ sectionAxis === 'x' ? 'YZ' : 'XZ' }} plane)
+        </span>
+        <p class="section-note">The cut face is not filled in, so the stock looks hollow where it is cut.</p>
       </template>
     </div>
   </div>
@@ -143,12 +147,19 @@ watch(
   right: 8px;
   top: 8px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  max-width: 60%;
   background: rgba(255, 255, 255, 0.9);
   padding: 4px 6px;
   border-radius: 4px;
   font-size: 12px;
+}
+.section-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: #5b6470;
 }
 .viewer {
   position: relative;
