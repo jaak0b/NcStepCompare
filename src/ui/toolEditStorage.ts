@@ -1,19 +1,27 @@
 // The user's tool table edits, saved in the browser (localStorage) so they come back for the next
 // job that uses the same tool. Nothing else is stored.
 import { CUTTER_SHAPE_KINDS, type CutterShapeKind } from '../engine/toolShape'
-import type { ToolEdits } from '../engine/toolTable'
+import type { ToolEdits, ToolField } from '../engine/toolTable'
 
 const STORAGE_KEY = 'ncstepcompare.toolEdits.v1'
-const NUMBER_FIELDS = [
-  'diameter',
-  'cornerRadius',
-  'tipAngle',
-  'fluteLength',
-  'shoulderLength',
-  'widthOfCutLimit',
-  'depthOfCutLimit',
-] as const
-type NumberField = (typeof NUMBER_FIELDS)[number]
+type NumberField = Exclude<ToolField, 'kind'>
+/** Every numeric tool field: keyed by the tool field type, so a field added there must be added here. */
+const NUMBER_FIELD_SET: Record<NumberField, true> = {
+  diameter: true,
+  cornerRadius: true,
+  tipAngle: true,
+  fluteLength: true,
+  shoulderLength: true,
+  widthOfCutLimit: true,
+  depthOfCutLimit: true,
+  pitch: true,
+  profileAngle: true,
+  teeth: true,
+  toothTipFlat: true,
+  neckDiameter: true,
+  toothOffset: true,
+}
+const NUMBER_FIELDS = Object.keys(NUMBER_FIELD_SET) as NumberField[]
 
 export type SavedToolEdits = Record<string, ToolEdits>
 
