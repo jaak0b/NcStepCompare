@@ -36,6 +36,12 @@ function tool(number: number, kind: CutterShapeKind, diameter: number, fluteLeng
       shoulderLength: 'header',
       widthOfCutLimit: 'assumed',
       depthOfCutLimit: 'assumed',
+      pitch: 'missing',
+      profileAngle: 'assumed',
+      teeth: 'assumed',
+      toothTipFlat: 'assumed',
+      neckDiameter: 'assumed',
+      toothOffset: 'assumed',
     },
   }
 }

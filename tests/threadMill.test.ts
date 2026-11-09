@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseGcode } from '../src/engine/gcodeParser'
 import { MaterialSimulation } from '../src/engine/simulation'
 import { cutterProfile, type CutterProfile, type CutterShape } from '../src/engine/toolShape'
+import { buildToolTable, toolProblems, withToolValue } from '../src/engine/toolTable'
 
 const profile = (shape: CutterShape): CutterProfile => {
   const p = cutterProfile(shape)
@@ -77,5 +78,33 @@ describe('thread mill tooth profile on the dexel stock', () => {
     expect(lowerEnds[2] - lowerEnds[1]).toBeCloseTo(0.5, 5)
     expect(gaps(sim, 6.575)).toEqual([]) // 1.55 from the hole centre
     expect(sim.grid.heights[column(6.475)]).toBe(0)
+  })
+})
+
+describe('thread mill entry in the tool table', () => {
+  // T6 of the backplate fixture header: 2.42 mm cutting diameter.
+  const header = ';@MKR|TOOL|number=6|id=152111243809|name=3.175*M3*9mm Thread|type=Thread|handlediameter=3.175|sticklength=0|shoulderlength=9|flutelength=10|diameter=2.42|tipdiameter=0|cornerradius=0|angle=0|halfAngle=0\nT6 M6\n'
+
+  it('stays a cylinder with a tool problem until the pitch is entered', () => {
+    const [t6] = buildToolTable(parseGcode(header).header.tools, [6])
+
+    expect(t6.sources.pitch).toBe('missing')
+    expect(toolProblems(t6)).toContain('Enter the thread pitch. Until then this thread mill is simulated as a cylinder of its cutting diameter, without thread grooves.')
+    expect(cutterProfile(t6)).toMatchObject({ classic: true })
+  })
+
+  // ISO 68-1 for P 0.5 on a 2.42 mm cutter (see the profile above).
+  it('prefills the ISO 68-1 tooth from the pitch, marked assumed', () => {
+    const [t6] = buildToolTable(parseGcode(header).header.tools, [6])
+
+    const t = withToolValue(t6, 'pitch', 0.5)
+
+    expect(t.toothTipFlat).toBeCloseTo(0.0625, 9)
+    expect(t.neckDiameter).toBeCloseTo(1.8787342, 6)
+    expect(t.toothOffset).toBeCloseTo(0.1875, 9)
+    expect(t.profileAngle).toBe(60)
+    expect(t.teeth).toBe(1)
+    expect(t.sources.neckDiameter).toBe('assumed')
+    expect(toolProblems(t)).toEqual([])
   })
 })

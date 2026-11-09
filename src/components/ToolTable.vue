@@ -26,6 +26,12 @@ const NUMBER_FIELDS: { field: NumberField; label: string; applies: (t: ToolSetup
   { field: 'shoulderLength', label: 'Shoulder length (mm)', applies: () => true },
   { field: 'cornerRadius', label: 'Corner radius (mm)', applies: (t) => t.kind === 'flat end mill' },
   { field: 'tipAngle', label: 'Tip angle (deg)', applies: (t) => t.kind === 'drill' || t.kind === 'V-bit' },
+  { field: 'pitch', label: 'Pitch (mm)', applies: (t) => t.kind === 'thread mill' },
+  { field: 'profileAngle', label: 'Profile angle (deg)', applies: (t) => t.kind === 'thread mill' },
+  { field: 'teeth', label: 'Teeth', applies: (t) => t.kind === 'thread mill' },
+  { field: 'toothTipFlat', label: 'Tooth tip flat (mm)', applies: (t) => t.kind === 'thread mill' },
+  { field: 'neckDiameter', label: 'Neck diameter (mm)', applies: (t) => t.kind === 'thread mill' },
+  { field: 'toothOffset', label: 'Tip-to-tooth offset (mm)', applies: (t) => t.kind === 'thread mill' },
   { field: 'widthOfCutLimit', label: 'Width of cut limit (mm)', applies: () => true },
   { field: 'depthOfCutLimit', label: 'Depth of cut limit (mm)', applies: () => true },
 ]
@@ -67,6 +73,10 @@ function onValue(number: number, field: NumberField, event: Event) {
         </button>
       </div>
       <p v-for="p in toolProblems(t)" :key="p" class="problem">{{ p }}</p>
+      <p v-if="t.kind === 'thread mill'" class="note">
+        Tooth values are ISO 68-1 starting values, calculated from the pitch and diameter. Check them
+        against the thread mill's data sheet.
+      </p>
       <div class="fields">
         <label>Type</label>
         <select :value="t.kind" @change="onKind(t.number, $event)">

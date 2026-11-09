@@ -1,7 +1,7 @@
 // Tool table for the simulation: one entry per tool number, prefilled from the Makera header and
 // editable by the user. Each value records where it came from.
 import type { ToolDefinition, ToolKind } from './makeraHeader'
-import { cutterProfile, type CutterShape, type CutterShapeKind } from './toolShape'
+import { cutterProfile, threadTriangleHeight, type CutterShape, type CutterShapeKind } from './toolShape'
 
 /** 'saved': a user entry from an earlier session, applied again (still a user entry). */
 export type ValueSource = 'header' | 'user' | 'saved' | 'assumed' | 'missing'
@@ -15,6 +15,12 @@ export type ToolField =
   | 'shoulderLength'
   | 'widthOfCutLimit'
   | 'depthOfCutLimit'
+  | 'pitch'
+  | 'profileAngle'
+  | 'teeth'
+  | 'toothTipFlat'
+  | 'neckDiameter'
+  | 'toothOffset'
 
 export interface ToolSetup extends CutterShape {
   number: number
@@ -25,6 +31,13 @@ export interface ToolSetup extends CutterShape {
   widthOfCutLimit: number
   /** Largest depth of cut (axial engagement) one move may take, mm. */
   depthOfCutLimit: number
+  /** Thread mill tooth data (see CutterShape); NaN for other cutter types and while missing. */
+  pitch: number
+  profileAngle: number
+  teeth: number
+  toothTipFlat: number
+  neckDiameter: number
+  toothOffset: number
   /** Header-only values, shown for reference; null when the tool is not in the header. */
   shankDiameter: number | null
   studioType: string | null
@@ -39,13 +52,50 @@ export const DEFAULT_V_BIT_TIP_ANGLE = 90
 export const DEFAULT_WIDTH_OF_CUT_FRACTION = 0.5
 export const DEFAULT_DEPTH_OF_CUT_FRACTION = 1
 
-/** The entry with every engagement limit that is still a default set from the current diameter. */
+/**
+ * Assumed thread mill tooth values: the ISO 68-1 basic profile (60 degree flanks, tip flat P/8,
+ * tooth depth 5/8 H) on a single tooth whose base starts at the tool tip. The pitch has no default.
+ */
+export const DEFAULT_THREAD_PROFILE_ANGLE = 60
+export const DEFAULT_THREAD_TEETH = 1
+
+/**
+ * The entry with every engagement limit and thread mill tooth value that is still a default set
+ * from the current diameter and pitch.
+ */
 function withDefaultLimits(t: ToolSetup): ToolSetup {
   const next: ToolSetup = { ...t, sources: { ...t.sources } }
-  if (next.sources.widthOfCutLimit === 'assumed') next.widthOfCutLimit = t.diameter * DEFAULT_WIDTH_OF_CUT_FRACTION
-  if (next.sources.depthOfCutLimit === 'assumed') next.depthOfCutLimit = t.diameter * DEFAULT_DEPTH_OF_CUT_FRACTION
+  const src = next.sources
+  if (src.widthOfCutLimit === 'assumed') next.widthOfCutLimit = t.diameter * DEFAULT_WIDTH_OF_CUT_FRACTION
+  if (src.depthOfCutLimit === 'assumed') next.depthOfCutLimit = t.diameter * DEFAULT_DEPTH_OF_CUT_FRACTION
+  if (src.profileAngle === 'assumed') next.profileAngle = DEFAULT_THREAD_PROFILE_ANGLE
+  if (src.teeth === 'assumed') next.teeth = DEFAULT_THREAD_TEETH
+  const p = next.pitch
+  if (src.toothTipFlat === 'assumed') next.toothTipFlat = p / 8
+  if (src.neckDiameter === 'assumed') next.neckDiameter = next.diameter - 2 * (5 / 8) * threadTriangleHeight(p, next.profileAngle)
+  if (src.toothOffset === 'assumed') {
+    const depth = (next.diameter - next.neckDiameter) / 2
+    next.toothOffset = next.toothTipFlat / 2 + depth * Math.tan((next.profileAngle * Math.PI) / 360)
+  }
   return next
 }
+
+const THREAD_DEFAULTS = {
+  pitch: NaN,
+  profileAngle: NaN,
+  teeth: NaN,
+  toothTipFlat: NaN,
+  neckDiameter: NaN,
+  toothOffset: NaN,
+}
+const THREAD_SOURCES = {
+  pitch: 'missing',
+  profileAngle: 'assumed',
+  teeth: 'assumed',
+  toothTipFlat: 'assumed',
+  neckDiameter: 'assumed',
+  toothOffset: 'assumed',
+} as const
 
 const SHAPE_BY_HEADER_KIND: Record<ToolKind, CutterShapeKind | null> = {
   'flat end mill': 'flat end mill',
@@ -81,6 +131,7 @@ function fromHeaderValues(t: ToolDefinition): ToolSetup {
     shoulderLength: t.shoulderLength,
     widthOfCutLimit: NaN,
     depthOfCutLimit: NaN,
+    ...THREAD_DEFAULTS,
     shankDiameter: t.shankDiameter,
     studioType: t.studioType,
     sources: {
@@ -92,6 +143,7 @@ function fromHeaderValues(t: ToolDefinition): ToolSetup {
       shoulderLength: 'header',
       widthOfCutLimit: 'assumed',
       depthOfCutLimit: 'assumed',
+      ...THREAD_SOURCES,
     },
   }
 }
@@ -108,6 +160,7 @@ function blank(number: number): ToolSetup {
     shoulderLength: NaN,
     widthOfCutLimit: NaN,
     depthOfCutLimit: NaN,
+    ...THREAD_DEFAULTS,
     shankDiameter: null,
     studioType: null,
     sources: {
@@ -119,6 +172,7 @@ function blank(number: number): ToolSetup {
       shoulderLength: 'missing',
       widthOfCutLimit: 'assumed',
       depthOfCutLimit: 'assumed',
+      ...THREAD_SOURCES,
     },
   })
 }
@@ -141,7 +195,7 @@ export function defaultTipAngle(kind: CutterShapeKind): number | null {
 
 /** Changes the cutter type. A drill or V-bit gets its default tip angle unless the user set one. */
 export function withToolKind(t: ToolSetup, kind: CutterShapeKind): ToolSetup {
-  const next: ToolSetup = { ...t, kind, sources: { ...t.sources, kind: 'user' } }
+  const next: ToolSetup = withDefaultLimits({ ...t, kind, sources: { ...t.sources, kind: 'user' } })
   const angle = defaultTipAngle(kind)
   if (angle !== null && !((t.sources.tipAngle === 'user' || t.sources.tipAngle === 'saved') && t.tipAngle > 0)) {
     next.tipAngle = angle
@@ -161,6 +215,9 @@ export function toolProblems(t: ToolSetup): string[] {
   const problems: string[] = []
   const shape = cutterProfile(t)
   if (typeof shape === 'string') problems.push(`${shape} Moves with this tool are not simulated.`)
+  if (t.kind === 'thread mill' && Number.isNaN(t.pitch)) {
+    problems.push('Enter the thread pitch. Until then this thread mill is simulated as a cylinder of its cutting diameter, without thread grooves.')
+  }
   if (!(t.fluteLength > 0)) problems.push('Enter a flute length above 0 mm.')
   if (!(t.shoulderLength > 0)) problems.push('Enter a shoulder length above 0 mm.')
   if (!(t.widthOfCutLimit > 0)) problems.push('Enter a width of cut limit above 0 mm. Moves with this tool are not checked against it.')
@@ -180,6 +237,12 @@ const EDITABLE_FIELDS: ToolField[] = [
   'shoulderLength',
   'widthOfCutLimit',
   'depthOfCutLimit',
+  'pitch',
+  'profileAngle',
+  'teeth',
+  'toothTipFlat',
+  'neckDiameter',
+  'toothOffset',
 ]
 
 export function toolEdits(t: ToolSetup): ToolEdits {
