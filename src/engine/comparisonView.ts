@@ -10,18 +10,17 @@
 //    height. A bottom face is never a gouge in 3-axis milling: the tool cannot reach it.
 //  - bit 2: the cell belongs to a thread finding.
 //
-// Surface colours: every drawn point of the stock (top surface, walls, side walls, undercut faces)
-// is classified by its own position against the tolerance zone, with the same limits that decide the
-// gouge and leftover cells (deviation.ts). A surface point is where stock material meets air. It is a
-// gouge when the air at its height lies below the gouge limit of the air's column (the model needs
-// material there), purple when that column belongs to a thread finding; otherwise leftover when the
-// material at its height lies above the leftover limit of the material's column; otherwise within
-// tolerance. On a top face material and air are the same column, so the colour is exactly the cell's
-// class. On a wall the material is the higher column and the air the lower one, so a wall cut too
-// far into the model is a gouge over its full height, and a wall standing farther out than the
-// leftover tolerance is leftover over its full height, down to the tolerance above the floor it must
-// reach. Of the up to 2 x 2 columns around a point, the point's own cell decides when it has
-// material (or air) at the point's height, else the nearest of the others that has.
+// Surface colours, with the same limits that decide the gouge and leftover cells (deviation.ts). The
+// top surface is drawn as a slope between cell centres, so a narrow column has no flat top of its
+// own: its colour is therefore looked up per cell, flat over the cell's whole footprint. A point
+// takes the class of the cell whose square holds it when that cell is a gouge (purple for a thread)
+// or leftover, so every such cell shows its class however narrow it is, its walls included. Inside
+// the square of a cell within tolerance, the point lies on that cell's top or on a wall passing
+// through: there it is a gouge when the air at its height lies below the gouge limit of the air's
+// column (a wall cut too far into the model is a gouge over its full height), and leftover when the
+// column holding the material at its height is a leftover cell (a wall belongs to the material it
+// bounds). Of the up to 2 x 2 columns around a point, the point's own cell is the air (or material)
+// when it has air (or material) at the point's height, else the nearest of the others that has.
 //
 // Missing material: the material the model needs but the G-code cut away, in every cell below the
 // gouge limit (gouges and threads): from the machined height up to the model surface. Such a cell
@@ -103,8 +102,8 @@ export interface SurfaceGrid {
 }
 
 /**
- * Class of the surface point (x, y, z) of the drawn stock: the rule the stock surface shader applies
- * per fragment (stockSurface.ts mirrors it in GLSL).
+ * Class of the surface point (x, y, z) of the drawn stock (see the header): the rule the stock
+ * surface shader applies per fragment (stockSurface.ts mirrors it in GLSL).
  */
 export function surfaceClassAt(
   g: SurfaceGrid,
@@ -129,6 +128,8 @@ export function surfaceClassAt(
   const hasMaterial = (c: number) => heights[c] >= z - HEIGHT_ROUNDING_MM && !inGap(c)
   const hasAir = (c: number) => heights[c] <= z + HEIGHT_ROUNDING_MM || inGap(c)
   const own = clampJ(Math.floor(fy)) * g.nx + clampI(Math.floor(fx))
+  const ownClass = pointClass(heights[own], limits.gougeBelow[own], (classes[own] & THREAD_BIT) !== 0, limits.leftoverAbove[own])
+  if (ownClass !== SurfaceClass.Within) return ownClass
   let material = hasMaterial(own) ? own : -1
   let air = hasAir(own) ? own : -1
   let bestMaterial = Infinity
@@ -153,9 +154,8 @@ export function surfaceClassAt(
   }
   if (material < 0) material = highest
   // No column with air at z: the air lies outside the stock (its side walls), never a gouge.
-  const gougeBelow = air < 0 ? -Infinity : limits.gougeBelow[air]
-  const thread = air >= 0 && (classes[air] & THREAD_BIT) !== 0
-  return pointClass(z, gougeBelow, thread, limits.leftoverAbove[material])
+  if (air >= 0 && z < limits.gougeBelow[air]) return (classes[air] & THREAD_BIT) !== 0 ? SurfaceClass.Thread : SurfaceClass.Gouge
+  return heights[material] > limits.leftoverAbove[material] ? SurfaceClass.Leftover : SurfaceClass.Within
 }
 
 /**

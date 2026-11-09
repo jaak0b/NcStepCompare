@@ -50,12 +50,9 @@ describe('surface colours by position against the model', () => {
 
     // Ledge top: within tolerance up to 0.1 mm from the hole wall (cells 10, 11), leftover beyond.
     expect([r.at(xIn(11) + 0.02, -5), r.at(xIn(12) + 0.02, -5), r.at(xIn(19), -5)]).toEqual([SurfaceClass.Within, SurfaceClass.Leftover, SurfaceClass.Leftover])
-    // Ledge wall at X 1.0, on both sides of the cell edge: leftover down to 0.1 mm above the
-    // part bottom (Z -9.9), within tolerance below.
-    for (const x of [xEnd(19), xIn(20)]) {
-      expect([-5, -7, -9.85].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Leftover))
-      expect(r.at(x, -9.95)).toBe(SurfaceClass.Within)
-    }
+    // Ledge wall at X 1.0, on both sides of the cell edge: it bounds leftover material, so it is
+    // leftover over its full height.
+    for (const x of [xEnd(19), xIn(20)]) expect([-5, -7, -9.95].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Leftover))
     // The hole wall itself (X 0.5, Z 0 to -5) lies on the model wall.
     expect([r.at(xEnd(9), -2), r.at(xIn(10), -2)]).toEqual([SurfaceClass.Within, SurfaceClass.Within])
   })
@@ -77,10 +74,7 @@ describe('surface colours by position against the model', () => {
 
     // Top strip: the first 0.1 mm from the model wall is within tolerance, the rest leftover.
     expect([10, 11, 12, 15].map((k) => r.at(xIn(k) + 0.02, 0))).toEqual([SurfaceClass.Within, SurfaceClass.Within, SurfaceClass.Leftover, SurfaceClass.Leftover])
-    for (const x of [xEnd(15), xIn(16)]) {
-      expect([0, -5, -9.85].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Leftover))
-      expect(r.at(x, -9.95)).toBe(SurfaceClass.Within)
-    }
+    for (const x of [xEnd(15), xIn(16)]) expect([0, -5, -9.95].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Leftover))
   })
 
   it('colours a part wall cut 0.05 mm wide of the outline within tolerance', () => {
@@ -88,6 +82,34 @@ describe('surface colours by position against the model', () => {
 
     expect(r.summary.leftoverCells).toBe(0)
     for (const x of [xIn(10) + 0.02, xEnd(10), xIn(11)]) expect([0, -5, -9.95].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Within))
+  })
+
+  it('colours a leftover column one cell wide over its whole square, though its top is drawn as a slope', () => {
+    // Part top at Z -3. Cell 11 stands at Z -2.95, 0.1 mm from the part wall, its neighbours cut
+    // through: 0.112 mm from the model's top edge, so leftover, with its leftover limit at Z -3.
+    // Between cell centres its top is drawn sloping down to Z -6.625 at the cell's edges.
+    const m = model(MODEL_THROUGH)
+    m.top.fill(-3, 0, 10)
+    const r = classify(m, row([10, -3], [1, -10.3], [1, -2.95], [18, -10.3]))
+    const slope = (x: number) => -2.95 - (Math.abs(x - 0.575) / 0.05) * 7.35
+
+    expect(r.summary.leftoverCells).toBe(1)
+    for (const x of [0.551, 0.56, 0.575, 0.59, 0.599]) expect(r.at(x, slope(x))).toBe(SurfaceClass.Leftover)
+    // The rest of the slope, in the squares of the cut-through cells, is the column's wall.
+    for (const x of [0.545, 0.53, 0.605, 0.62]) expect(r.at(x, slope(x))).toBe(SurfaceClass.Leftover)
+  })
+
+  it('colours a leftover ring around a drilled opening leftover on its top, inner wall and bottom face', () => {
+    // Through-hole from X 0.5: cells 10..19 hold a drill cone ring 0.95 mm high, cells 20.. are the
+    // opening the drill tip made.
+    const r = classify(model(MODEL_THROUGH), row([10, 0], [10, -9.05], [10, -10.3]))
+    const m = model(MODEL_THROUGH)
+    const limits = toleranceLimits(grid, m, tol, grid.bottom)
+    const classes = cellClasses(m, new Uint8Array(N), grid.bottom, tol.leftover)
+
+    expect(r.at(xIn(15), -9.05)).toBe(SurfaceClass.Leftover)
+    for (const x of [xEnd(19), xIn(20)]) expect([-9.1, -9.5, -9.99].map((z) => r.at(x, z))).toEqual(Array(3).fill(SurfaceClass.Leftover))
+    expect(bottomFaceClass(classes[15], -9.05, limits.leftoverAbove[15])).toBe(SurfaceClass.Leftover)
   })
 
   it('colours the bottom face leftover inside a through-hole left with a cone, within under the part', () => {
