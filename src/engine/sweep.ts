@@ -355,7 +355,10 @@ function bandCut(
     if (r < 0) continue
     total = total < 0 ? r : total + r
     if (r > 0) {
-      const contact = dex.lastHighestRemoved - (z0 + tLow * dz)
+      // A band never touches material above its own top; the cap matters on ramps, where the
+      // highest point is removed later in the move than the band's lowest.
+      const bandTop = band.upper.length > 0 ? band.upper[0].h : Infinity
+      const contact = Math.min(dex.lastHighestRemoved - (z0 + tLow * dz), bandTop)
       if (contact > bandContact) bandContact = contact
     }
   }

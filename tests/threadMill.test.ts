@@ -121,17 +121,19 @@ describe('thread grooves in playback', () => {
 })
 
 describe('contact height of a thread mill plunge', () => {
-  // Plunge from Z 5 to Z -3 into untouched stock (top Z 0): material up to 3 mm above the tip.
+  // Plunge from Z 5 to Z -3 into untouched stock (top Z 0). The lowest tooth clears every column
+  // it reaches before the tooth above arrives, so the cutter touches material only up to the top of
+  // the lowest tooth, 3/4 P = 0.375 mm, with one tooth or two. The neck passes through the cut.
   it.each([
-    ['one tooth', threadMill],
-    ['two teeth', { ...threadMill, teeth: 2 }],
-  ] as [string, CutterShape][])('measures 3 mm (%s)', (_name, mill) => {
+    ['one tooth', threadMill, 0.375],
+    ['two teeth', { ...threadMill, teeth: 2 }, 0.375],
+  ] as [string, CutterShape, number][])('measures the top of the lowest tooth (%s)', (_name, mill, expected) => {
     const job = parseGcode('T2 M6\nG0 X2 Y2 Z5\nG1 Z-3 F100\n')
     const sim = new MaterialSimulation(stock, 0.05, job.moves, new Map([[2, profile(mill)]]), [])
 
     sim.advanceTo(job.moves.count)
 
-    expect(sim.contactHeight[job.moves.count - 1]).toBeCloseTo(3, 5) // the plunge, the last move
+    expect(sim.contactHeight[job.moves.count - 1]).toBeCloseTo(expected, 5) // the plunge, the last move
   })
 })
 
