@@ -259,13 +259,13 @@ function startSimulation() {
       onReady: (r) => {
         simResult.value = r
         moveFindings.value = r.findings
-        viewer.value?.setStockGrid(r.grid, r.heights)
+        viewer.value?.setStockGrid(r.grid, r.heights, r.gaps)
         playIndex.value = r.moveIndex
         shownIndex.value = r.moveIndex
         simStatus.value = 'ready'
       },
       onFrame: (f) => {
-        viewer.value?.applyStockRect(f.rect, f.data)
+        viewer.value?.applyStockRect(f.rect, f.data, f.gaps)
         shownIndex.value = f.moveIndex
         if (f.deviation) deviation.value = f.deviation
         const requestToShownMs = performance.now() - seekRequestedAt

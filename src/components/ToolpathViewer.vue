@@ -6,6 +6,7 @@ import type { LoadedJob } from '../workers/parseMessages'
 import type { CellRect } from '../engine/simulation'
 import type { GridInfo } from '../workers/simulationMessages'
 import type { MissingMaterial } from '../engine/comparisonView'
+import type { GapRecord } from '../engine/dexelStock'
 
 const props = defineProps<{
   loaded: LoadedJob | null
@@ -55,8 +56,8 @@ watch(() => props.toolMarker, showMarker)
 
 // The machined stock is large typed data, so the parent pushes it in directly instead of via props.
 defineExpose({
-  setStockGrid: (grid: GridInfo, heights: Float32Array) => scene?.setStockGrid(grid, heights),
-  applyStockRect: (rect: CellRect, data: Float32Array) => scene?.applyStockRect(rect, data),
+  setStockGrid: (grid: GridInfo, heights: Float32Array, gaps: GapRecord) => scene?.setStockGrid(grid, heights, gaps),
+  applyStockRect: (rect: CellRect, data: Float32Array, gaps: GapRecord) => scene?.applyStockRect(rect, data, gaps),
   clearStock: () => scene?.clearStock(),
   setStockLimits: (limits: Float32Array | null, classes: Uint8Array | null) => scene?.setStockLimits(limits, classes),
   setMissingMaterial: (m: MissingMaterial | null) => scene?.setMissingMaterial(m),
@@ -77,6 +78,32 @@ watch(
   () => props.rapidsVisible,
   (v) => scene?.setRapidsVisible(v),
 )
+
+// Section view: a plane across X or Y that cuts the drawn stock, to look into holes and threads.
+const sectionOn = ref(false)
+const sectionAxis = ref<'x' | 'y'>('y')
+const sectionPosition = ref(0)
+const sectionRange = () => {
+  const b = props.stockBox
+  if (!b) return { min: 0, max: 0 }
+  return sectionAxis.value === 'x' ? { min: b.min.x, max: b.max.x } : { min: b.min.y, max: b.max.y }
+}
+function showSection() {
+  scene?.setSectionPlane(sectionOn.value && props.stockBox ? { axis: sectionAxis.value, position: sectionPosition.value } : null)
+}
+watch([sectionOn, sectionAxis, sectionPosition], showSection)
+watch(sectionAxis, () => {
+  const r = sectionRange()
+  sectionPosition.value = (r.min + r.max) / 2
+})
+watch(
+  () => props.stockBox,
+  () => {
+    const r = sectionRange()
+    if (sectionPosition.value < r.min || sectionPosition.value > r.max) sectionPosition.value = (r.min + r.max) / 2
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -90,10 +117,39 @@ watch(
       <span><i class="swatch outline"></i>STEP outline</span>
       <span><i class="swatch finding"></i>Selected finding</span>
     </div>
+    <div v-if="stockBox" class="section">
+      <label><input v-model="sectionOn" type="checkbox" /> Section view</label>
+      <template v-if="sectionOn">
+        <select v-model="sectionAxis">
+          <option value="x">across X</option>
+          <option value="y">across Y</option>
+        </select>
+        <input
+          v-model.number="sectionPosition"
+          type="range"
+          :min="sectionRange().min"
+          :max="sectionRange().max"
+          step="0.05"
+        />
+        <span>{{ sectionAxis.toUpperCase() }} {{ sectionPosition.toFixed(2) }} mm</span>
+      </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.section {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
 .viewer {
   position: relative;
   width: 100%;

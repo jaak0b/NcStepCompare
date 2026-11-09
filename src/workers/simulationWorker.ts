@@ -64,6 +64,7 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
   let unsimulated = 0
   for (const v of s.unsimulatedMoves) unsimulated += v
   const heights = s.grid.heights.slice()
+  const gaps = s.grid.dexels.record(0, s.grid.nx - 1, 0, s.grid.ny - 1)
   const removedVolume = s.removedVolume.slice()
   const maxCutDepth = s.maxCutDepth.slice()
   post(
@@ -79,6 +80,7 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
         stock: req.stock,
       },
       heights,
+      gaps,
       moveIndex: s.current,
       checkpointCount: s.checkpointCount,
       checkpointBytes: s.checkpointBytes(),
@@ -88,7 +90,7 @@ function init(req: Extract<SimulationRequest, { type: 'init' }>) {
       toolProblems,
       findings,
     },
-    [heights.buffer as ArrayBuffer, removedVolume.buffer as ArrayBuffer, maxCutDepth.buffer as ArrayBuffer],
+    [heights, removedVolume, maxCutDepth, gaps.columns, gaps.counts, gaps.pairs].map((a) => a.buffer as ArrayBuffer),
   )
 }
 
@@ -110,6 +112,7 @@ function runSeek() {
       const src = (rect.minJ + j) * nx + rect.minI
       data.set(heights.subarray(src, src + w), j * w)
     }
+    const gaps = sim.grid.dexels.record(rect.minI, rect.maxI, rect.minJ, rect.maxJ)
     post(
       {
         type: 'frame',
@@ -117,11 +120,12 @@ function runSeek() {
           moveIndex: sim.current,
           rect,
           data,
+          gaps,
           workerMs: performance.now() - t0,
           deviation: comparison?.summary() ?? null,
         },
       },
-      [data.buffer as ArrayBuffer],
+      [data, gaps.columns, gaps.counts, gaps.pairs].map((a) => a.buffer as ArrayBuffer),
     )
   } catch (err) {
     fail(err)

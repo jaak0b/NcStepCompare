@@ -45,8 +45,18 @@
 // - The bottom face faces down only, so it is skipped while the camera is above the stock bottom.
 // - Tiles without a cell at or below the stock bottom use a shader without the discard, so the GPU
 //   keeps its early depth test there; tiles are drawn nearest first to make the most of it.
+//
+// Undercuts (gaps in the dexel columns below the top height) are drawn by undercutMesh. Here, a
+// wall fragment of the top surface or the side walls is discarded when every cell around it whose
+// top lies above the fragment has a gap at the fragment's Z: there is no material at that point,
+// so the groove opening shows. The gaps reach the shader through two textures (per cell an offset
+// and a count into a list of (lo, hi) pairs), created only once a job has gaps; without gaps the
+// test is skipped and the picture is the same as without undercut support. Tiles holding gaps are
+// always drawn at full resolution. A clipping plane (three.js clippingPlanes) cuts the drawn faces
+// to look into holes; it never changes the material data.
 import * as THREE from 'three'
 import type { CellRect } from '../engine/simulation'
+import type { StockGaps } from './undercutMesh'
 import type { GridInfo } from '../workers/simulationMessages'
 
 const TILE = 128
@@ -56,6 +66,8 @@ const LEVELS = Math.log2(TILE) + 1
 const STOCK_COLOR = new THREE.Color(0xb8bcc2)
 /** Texture stand-in for -Infinity (no gouge limit), which a float texture lookup should not carry. */
 const NO_LIMIT = -1e30
+/** Width of the gap pair texture, in pairs. */
+const GAP_TEX_WIDTH = 4096
 
 const COMMON = /* glsl */ `
 uniform highp sampler2D uHeights;
@@ -66,6 +78,7 @@ uniform vec2 uStockMax;
 uniform float uBottom;
 uniform highp sampler2D uTileStep;
 uniform ivec2 uTiles;
+#include <clipping_planes_pars_vertex>
 
 // Vertex (k, l) with k in [0, nx + 1]: k = 0 is the stock edge, k = 1..nx the cell centres. A cell
 // at or below the stock bottom is an opening: its vertex goes one cell below the stock bottom.
@@ -129,7 +142,9 @@ void main() {
   vXY = vertexXY(v);
   vec4 world = modelMatrix * vec4(vXY, z, 1.0);
   vWorld = world.xyz;
-  gl_Position = projectionMatrix * viewMatrix * world;
+  vec4 mvPosition = viewMatrix * world;
+  #include <clipping_planes_vertex>
+  gl_Position = projectionMatrix * mvPosition;
 }
 `
 
@@ -155,7 +170,9 @@ void main() {
   vXY = vertexXY(v);
   vec4 world = modelMatrix * vec4(vXY, z, 1.0);
   vWorld = world.xyz;
-  gl_Position = projectionMatrix * viewMatrix * world;
+  vec4 mvPosition = viewMatrix * world;
+  #include <clipping_planes_vertex>
+  gl_Position = projectionMatrix * mvPosition;
 }
 `
 
@@ -173,14 +190,46 @@ uniform vec3 uGougeColor;
 uniform vec3 uLeftoverColor;
 uniform vec3 uWithinColor;
 uniform vec3 uThreadColor;
+uniform bool uHasGaps;
+uniform highp usampler2D uGapIndex;
+uniform highp sampler2D uGapData;
 in vec3 vWorld;
 in float vHeight;
 in vec2 vXY;
 out vec4 fragColor;
+#include <clipping_planes_pars_fragment>
+
+// True when height z lies inside a gap of cell c.
+bool inGap(ivec2 c, float z) {
+  uvec2 idx = texelFetch(uGapIndex, c, 0).rg;
+  for (uint k = 0u; k < idx.g; k++) {
+    uint p = idx.r + k;
+    vec2 g = texelFetch(uGapData, ivec2(int(p % ${GAP_TEX_WIDTH}u), int(p / ${GAP_TEX_WIDTH}u)), 0).rg;
+    if (z > g.x && z < g.y) return true;
+  }
+  return false;
+}
 
 void main() {
+  #include <clipping_planes_fragment>
 #ifdef THROUGH_CUTS
   if (vHeight <= uBottom) discard;
+#endif
+#ifndef BOTTOM_FACE
+  if (uHasGaps) {
+    // Keep the fragment only where a cell around it holds material at its height.
+    ivec2 gb = ivec2(floor((vXY - uOrigin) / uCellSize - 0.5));
+    bool above = false;
+    bool material = false;
+    for (int k = 0; k < 4; k++) {
+      ivec2 n = clamp(gb + ivec2(k & 1, k >> 1), ivec2(0), uGridSize - 1);
+      if (texelFetch(uHeights, n, 0).r > vHeight) {
+        above = true;
+        if (!inGap(n, vHeight)) material = true;
+      }
+    }
+    if (above && !material) discard;
+  }
 #endif
   vec3 color = uColor;
 #ifdef BOTTOM_FACE
@@ -259,6 +308,12 @@ export class StockSurface {
   private readonly box = new THREE.Box3()
   private readonly matrix = new THREE.Matrix4()
   private readonly bufferSize = new THREE.Vector2()
+  /** Per surface tile: 1 when it covers a cell with gaps (drawn at full resolution). */
+  private readonly tileGaps: Uint8Array
+  private gapIndex: THREE.DataTexture
+  private gapData: THREE.DataTexture
+  /** Gap pairs written so far into gapData (append-only; rebuilt when it grows too large). */
+  private gapPairsUsed = 0
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -292,6 +347,9 @@ export class StockSurface {
     this.stepTexture.generateMipmaps = false
     this.stepTexture.needsUpdate = true
 
+    this.tileGaps = new Uint8Array(tileCount)
+    this.gapIndex = StockSurface.gapIndexTexture(new Uint32Array(2), 1, 1)
+    this.gapData = StockSurface.gapDataTexture(new Float32Array(2 * GAP_TEX_WIDTH), 1)
     this.limitsTexture = StockSurface.limitsTextureFrom(new Float32Array(2), 1, 1)
     this.classesTexture = StockSurface.classesTextureFrom(new Uint8Array(1), 1, 1)
     this.uniforms = {
@@ -311,6 +369,9 @@ export class StockSurface {
       uStockMax: { value: new THREE.Vector2(grid.stock.max.x, grid.stock.max.y) },
       uBottom: { value: grid.stock.min.z },
       uColor: { value: STOCK_COLOR },
+      uHasGaps: { value: false },
+      uGapIndex: { value: this.gapIndex },
+      uGapData: { value: this.gapData },
     }
 
     const variants: Record<string, number>[] = [{}, { THROUGH_CUTS: 1 }]
@@ -377,7 +438,8 @@ export class StockSurface {
         // The nearest point of the tile bounds how large one of its cells can appear.
         const distance = this.box.distanceToPoint(cam)
         const cellPx = distance > 0 ? (cellSize * focal) / distance : Infinity
-        const level = Math.min(LEVELS - 1, Math.max(0, Math.floor(Math.log2(MAX_QUAD_PX / cellPx))))
+        // Tiles holding undercuts are always drawn at full resolution.
+        const level = this.tileGaps[t] ? 0 : Math.min(LEVELS - 1, Math.max(0, Math.floor(Math.log2(MAX_QUAD_PX / cellPx))))
         const step = 1 << level
         if (steps[t] !== step) {
           steps[t] = step
@@ -439,6 +501,125 @@ export class StockSurface {
     )
   }
 
+  /** Height texture data, kept current with every change (shared with the undercut mesh). */
+  get heights(): Float32Array {
+    return this.texture.image.data as Float32Array
+  }
+
+  /** Cuts the drawn faces with the given planes (empty for none). */
+  setClipPlanes(planes: THREE.Plane[]): void {
+    for (const m of this.materials) {
+      m.clippingPlanes = planes
+      m.needsUpdate = true
+    }
+  }
+
+  /**
+   * Takes the gaps of the cells in `rect` from the mirror into the gap textures (`rect` null: all).
+   * Until the first gap the textures stay 1 x 1 and the gap test is off.
+   */
+  updateGaps(gaps: StockGaps, rect: CellRect | null): void {
+    const { nx, ny } = this.grid
+    if (gaps.columns.size === 0 && !this.uniforms.uHasGaps.value) return
+    const full = rect === null || !this.uniforms.uHasGaps.value || this.gapPairsUsed > 4 * 1024 * 1024
+    if (full) {
+      // Rebuild both textures from the whole mirror.
+      let total = 0
+      for (const g of gaps.columns.values()) total += g.length / 2
+      const index = new Uint32Array(nx * ny * 2)
+      const rows = Math.max(1, Math.ceil((total * 2) / GAP_TEX_WIDTH))
+      const data = new Float32Array(rows * GAP_TEX_WIDTH * 2)
+      let p = 0
+      for (const [c, g] of gaps.columns) {
+        index[c * 2] = p
+        index[c * 2 + 1] = g.length / 2
+        data.set(g, p * 2)
+        p += g.length / 2
+      }
+      this.gapIndex.dispose()
+      this.gapData.dispose()
+      this.gapIndex = StockSurface.gapIndexTexture(index, nx, ny)
+      this.gapData = StockSurface.gapDataTexture(data, rows)
+      this.gapPairsUsed = p
+      this.tileGaps.fill(0)
+      for (const c of gaps.columns.keys()) this.markGapTile(c)
+    } else {
+      const r = rect!
+      const w = r.maxI - r.minI + 1
+      const h = r.maxJ - r.minJ + 1
+      if (w <= 0 || h <= 0) return
+      const index = this.gapIndex.image.data as Uint32Array
+      const patch = new Uint32Array(w * h * 2)
+      let needed = this.gapPairsUsed
+      for (let j = r.minJ; j <= r.maxJ; j++) {
+        for (let i = r.minI; i <= r.maxI; i++) needed += (gaps.columns.get(j * nx + i)?.length ?? 0) / 2
+      }
+      let data = this.gapData.image.data as Float32Array
+      if (needed * 2 > data.length) {
+        const rows = Math.ceil((needed * 4) / GAP_TEX_WIDTH)
+        const grown = new Float32Array(rows * GAP_TEX_WIDTH * 2)
+        grown.set(data)
+        this.gapData.dispose()
+        this.gapData = StockSurface.gapDataTexture(grown, rows)
+        data = grown
+      }
+      for (let j = r.minJ; j <= r.maxJ; j++) {
+        for (let i = r.minI; i <= r.maxI; i++) {
+          const c = j * nx + i
+          const g = gaps.columns.get(c)
+          const q = ((j - r.minJ) * w + (i - r.minI)) * 2
+          if (g) {
+            data.set(g, this.gapPairsUsed * 2)
+            patch[q] = this.gapPairsUsed
+            patch[q + 1] = g.length / 2
+            this.gapPairsUsed += g.length / 2
+            this.markGapTile(c)
+          }
+          index[c * 2] = patch[q]
+          index[c * 2 + 1] = patch[q + 1]
+        }
+      }
+      this.gapData.needsUpdate = true
+      const tex = StockSurface.gapIndexTexture(patch, w, h)
+      this.renderer.copyTextureToTexture(tex, this.gapIndex, null, new THREE.Vector2(r.minI, r.minJ))
+      tex.dispose()
+    }
+    this.uniforms.uGapIndex.value = this.gapIndex
+    this.uniforms.uGapData.value = this.gapData
+    this.uniforms.uHasGaps.value = true
+  }
+
+  private markGapTile(c: number): void {
+    const nx = this.grid.nx
+    const j = Math.floor(c / nx)
+    const i = c - j * nx
+    // Cell c is read by vertex c + 1 and, on a tile edge, by the tile before it.
+    for (const ty of [Math.floor(j / TILE), Math.floor((j + 1) / TILE)]) {
+      for (const tx of [Math.floor(i / TILE), Math.floor((i + 1) / TILE)]) {
+        if (tx < this.tilesX && ty < this.tilesY) this.tileGaps[ty * this.tilesX + tx] = 1
+      }
+    }
+  }
+
+  private static gapIndexTexture(data: Uint32Array, w: number, h: number): THREE.DataTexture {
+    const t = new THREE.DataTexture(data, w, h, THREE.RGIntegerFormat, THREE.UnsignedIntType)
+    t.internalFormat = 'RG32UI'
+    t.minFilter = THREE.NearestFilter
+    t.magFilter = THREE.NearestFilter
+    t.generateMipmaps = false
+    t.needsUpdate = true
+    return t
+  }
+
+  private static gapDataTexture(data: Float32Array, rows: number): THREE.DataTexture {
+    const t = new THREE.DataTexture(data, GAP_TEX_WIDTH, rows, THREE.RGFormat, THREE.FloatType)
+    t.minFilter = THREE.NearestFilter
+    t.magFilter = THREE.NearestFilter
+    t.generateMipmaps = false
+    t.needsUpdate = true
+    return t
+  }
+
   /**
    * Shows the comparison: per cell, interleaved, the gouge and leftover limit heights (-Infinity for
    * no gouge limit), and the class byte per cell. Null shows plain stock.
@@ -495,6 +676,8 @@ export class StockSurface {
     this.limitsTexture.dispose()
     this.classesTexture.dispose()
     this.stepTexture.dispose()
+    this.gapIndex.dispose()
+    this.gapData.dispose()
   }
 
   /** X of vertex column k: the stock edge for k = 0 and nx + 1, else the cell centre (as vertexXY). */
@@ -543,6 +726,7 @@ export class StockSurface {
       uniforms: this.uniforms,
       defines: { TILE, ...defines },
       side,
+      clipping: true,
     })
     this.materials.push(m)
     return m

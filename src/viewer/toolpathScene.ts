@@ -9,6 +9,8 @@ import type { GridInfo } from '../workers/simulationMessages'
 import type { MissingMaterial } from '../engine/comparisonView'
 import { missingMaterialMesh } from './missingMaterial'
 import { StockSurface } from './stockSurface'
+import { StockGaps, UndercutMesh } from './undercutMesh'
+import type { GapRecord } from '../engine/dexelStock'
 
 const CUTTING_COLOR = 0x1f6fd1
 const RAPID_COLOR = 0xe8590c
@@ -71,6 +73,10 @@ export class ToolpathScene {
     polygonOffsetUnits: 1,
   })
   private stockSurface: StockSurface | null = null
+  private stockGaps: StockGaps | null = null
+  private undercuts: UndercutMesh | null = null
+  /** Section plane cutting the drawn stock faces, or none. */
+  private clipPlanes: THREE.Plane[] = []
   private grid: GridInfo | null = null
   private missing: THREE.Mesh | null = null
   private missingVisible = false
@@ -90,6 +96,7 @@ export class ToolpathScene {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(window.devicePixelRatio)
     this.renderer.setClearColor(0xffffff)
+    this.renderer.localClippingEnabled = true
     container.appendChild(this.renderer.domElement)
 
     this.camera.up.set(0, 0, 1)
@@ -184,17 +191,52 @@ export class ToolpathScene {
   }
 
   /** Shows the machined stock from the whole simulation grid. */
-  setStockGrid(grid: GridInfo, heights: Float32Array): void {
+  setStockGrid(grid: GridInfo, heights: Float32Array, gaps: GapRecord): void {
     this.clearStock()
     this.grid = grid
-    this.stockSurface = new StockSurface(this.renderer, this.scene, grid, heights)
+    const surface = new StockSurface(this.renderer, this.scene, grid, heights)
+    this.stockSurface = surface
+    this.stockGaps = new StockGaps(grid.nx)
+    const all = { minI: 0, maxI: grid.nx - 1, minJ: 0, maxJ: grid.ny - 1 }
+    this.stockGaps.applyRect(all, gaps)
+    surface.updateGaps(this.stockGaps, null)
+    this.undercuts = new UndercutMesh(this.scene, grid, this.stockGaps, surface.heights)
+    this.applyClipPlanes()
     this.requestRender()
   }
 
   /** Updates the changed cells of the machined stock. */
-  applyStockRect(rect: CellRect, data: Float32Array): void {
+  applyStockRect(rect: CellRect, data: Float32Array, gaps: GapRecord): void {
     this.stockSurface?.applyRect(rect, data)
+    if (this.stockGaps && this.stockSurface && this.undercuts) {
+      const before = this.stockGaps.columns.size
+      this.stockGaps.applyRect(rect, gaps)
+      if (before > 0 || this.stockGaps.columns.size > 0) {
+        this.stockSurface.updateGaps(this.stockGaps, rect)
+        this.undercuts.rebuild(rect)
+      }
+    }
     this.requestRender()
+  }
+
+  /**
+   * Cuts the drawn stock with a section plane across `axis` at `position` (work coordinates), keeping
+   * the side above it; null removes the plane. Only the drawing is cut, never the material data.
+   */
+  setSectionPlane(section: { axis: 'x' | 'y'; position: number } | null): void {
+    this.clipPlanes = section
+      ? [new THREE.Plane(new THREE.Vector3(section.axis === 'x' ? 1 : 0, section.axis === 'y' ? 1 : 0, 0), -section.position)]
+      : []
+    this.applyClipPlanes()
+    this.requestRender()
+  }
+
+  private applyClipPlanes(): void {
+    this.stockSurface?.setClipPlanes(this.clipPlanes)
+    if (this.undercuts) {
+      this.undercuts.material.clippingPlanes = this.clipPlanes
+      this.undercuts.material.needsUpdate = true
+    }
   }
 
   /** Colours the stock by the comparison limits and cell classes (see StockSurface.setLimits), or plain for null. */
@@ -309,6 +351,9 @@ export class ToolpathScene {
   clearStock(): void {
     this.stockSurface?.dispose()
     this.stockSurface = null
+    this.undercuts?.dispose()
+    this.undercuts = null
+    this.stockGaps = null
     this.clearMissing()
     this.requestRender()
   }

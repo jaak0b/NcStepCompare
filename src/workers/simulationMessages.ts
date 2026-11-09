@@ -5,6 +5,7 @@ import type { Finding } from '../engine/findings/finding'
 import type { FindingMoves, FindingTool } from '../engine/findings/moveFindings'
 import type { ToolChange } from '../engine/gcodeParser'
 import type { PartPlacement } from '../engine/partPlacement'
+import type { GapRecord } from '../engine/dexelStock'
 import type { CellRect } from '../engine/simulation'
 import type { TriangleMesh } from '../engine/stepModel'
 import type { Box3D } from '../engine/stock'
@@ -30,6 +31,8 @@ export interface SimulationFrame {
   moveIndex: number
   rect: CellRect
   data: Float32Array
+  /** Undercut gaps of the columns in `rect` that hold any; the others in `rect` have none. */
+  gaps: GapRecord
   /** Time the worker spent on this frame (seek and copy), measured. */
   workerMs: number
   /** Deviation of the shown stock from the placed parts, or null with no parts placed. */
@@ -88,6 +91,8 @@ export interface SimulationReady {
   grid: GridInfo
   /** The whole grid after the last move. */
   heights: Float32Array
+  /** Undercut gaps of every column that holds any, after the last move. */
+  gaps: GapRecord
   moveIndex: number
   checkpointCount: number
   checkpointBytes: number
